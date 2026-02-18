@@ -15,7 +15,7 @@ bash install.sh
 ./run.sh --position "10378137 0 0" --orientation "140 0 0" --focal-length 85e-3
 ```
 
-## How it works
+## Pipeline 1:
 
 ```
 Step 1  tools.generator  (found-tools, generator_env)
@@ -30,18 +30,6 @@ Step 3  tools.analysis  (found-tools, analyzer_env)
         python3 -m tools.analysis --result result.json --output report/
         → results/<timestamp>/report/
 ```
-
-`run.sh` is the only file you need to touch day-to-day. `install.sh` runs once.
-
-## Architecture
-
-**`CMakeLists.txt`** pulls in the `found` repo using the FetchContent pattern from FOUND's own README, and links against `found::found_lib`. The integration binary calls `minimalSEDA.Run()` and the distance algorithm directly — no subprocess, no CLI.
-
-**`src/integration_runner.cpp`** is the bridge: it loads the image, calls FOUND's edge detection, calls FOUND's distance determination, and writes a `result.json` that the analyzer reads.
-
-**`run.sh`** is the orchestrator. It calls `tools.generator` via `micromamba run -n generator_env`, then the C++ binary, then `tools.analysis` via `micromamba run -n analyzer_env`.
-
-**`install.sh`** clones both repos into `vendor/`, runs `found-tools/setup-tools-envs.sh`, and builds the binary with CMake.
 
 ## Files
 
