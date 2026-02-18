@@ -1,0 +1,8 @@
+build/
+vendor/
+results/
+.test_stubs/
+.test_build/
+.venv/
+__pycache__/
+*.pyc
