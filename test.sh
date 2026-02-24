@@ -19,9 +19,7 @@ trap cleanup EXIT
 
 mkdir -p "${STUB_DIR}" "${BUILD_DIR}"
 
-# =============================================================================
 # Test 1: C++ compiles against stub headers
-# =============================================================================
 log "Test 1: C++ compilation with stub FOUND headers"
 
 if ! command -v g++ &>/dev/null; then
@@ -99,9 +97,7 @@ fi
 
 fi
 
-# =============================================================================
 # Test 2: Binary produces valid JSON
-# =============================================================================
 log "Test 2: Binary runs and produces valid JSON"
 
 BIN="${BUILD_DIR}/found_integration"
@@ -169,9 +165,7 @@ fi
 
 fi
 
-# =============================================================================
 # Test 3: Binary argument validation
-# =============================================================================
 log "Test 3: Binary argument validation"
 
 if [[ ! -f "${BIN}" ]]; then
@@ -194,17 +188,13 @@ else
 
 fi
 
-# =============================================================================
 # Test 4: Shell script syntax
-# =============================================================================
 log "Test 4: Shell script syntax"
 
 bash -n "${ROOT}/run.sh"     2>/dev/null && ok "run.sh valid bash"     || fail "run.sh syntax error"
 bash -n "${ROOT}/install.sh" 2>/dev/null && ok "install.sh valid bash" || fail "install.sh syntax error"
 
-# =============================================================================
 # Test 5: run.sh preflight catches missing binary
-# =============================================================================
 log "Test 5: run.sh preflight"
 
 TMPROOT="${STUB_DIR}/fake_root"
@@ -219,9 +209,7 @@ else
     ok "run.sh preflight failed as expected"
 fi
 
-# =============================================================================
 # Test 6: run.sh rejects unknown flags
-# =============================================================================
 log "Test 6: run.sh flag validation"
 
 OUT=$(bash "${ROOT}/run.sh" --not-a-real-flag 2>&1 || true)
@@ -231,9 +219,7 @@ else
     fail "run.sh did not reject unknown flag"
 fi
 
-# =============================================================================
 # Summary
-# =============================================================================
 echo ""
 echo -e "${BOLD}── Results ──────────────────────────────────────────────────────${NC}"
 [[ ${PASS} -gt 0 ]] && echo -e "  ${GREEN}Passed:${NC}  ${PASS}" || echo "  Passed:  0"

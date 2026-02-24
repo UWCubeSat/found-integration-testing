@@ -2,15 +2,11 @@
 # =============================================================================
 # run.sh — FOUND integration test pipeline
 #
-#   Step 1  found-generator  (found-tools pip package — coming soon)
-#             Generates a synthetic Earth image from position + orientation.
-#             TODO: uncomment once found-tools adds found-generator entry point.
+#   Step 1: Generates a synthetic Earth image from position + orientation.
 #
-#   Step 2  found_integration  (C++ binary, this repo)
-#             Runs edge detection + distance determination on the image.
+#   Step 2  Runs edge detection + distance determination on the image.
 #
-#   Step 3  found-analyzer  (found-tools pip package — coming soon)
-#             Analyzes result.json and produces a report.
+#   Step 3  Analyzes result.json and produces a report.
 #             TODO: uncomment once found-tools adds found-analyzer entry point.
 #
 # Usage:
@@ -96,20 +92,13 @@ log "Output: ${OUTPUT_DIR}"
 log "Position:    ${POSITION}"
 log "Orientation: ${ORIENTATION}"
 
-# =============================================================================
-# Step 1 — Generate image  [found-generator]
-# =============================================================================
-# found-tools has tools.generator in the add-noise-generator-module branch
-# It's invoked as: python -m tools.generator [flags]
-# =============================================================================
-
+# Step 1 — Generate image 
 step "Step 1 — Generate image  [found-generator]"
 
 if [[ -n "${SUPPLIED_IMAGE}" ]]; then
     ok "Skipping — using supplied image"
 
 else
-    # Use tools.generator from the add-noise-generator-module branch
     "${PYTHON}" -m found_CLI_tools.generator \
         --position    ${POSITION} \
         --orientation ${ORIENTATION} \
@@ -119,14 +108,11 @@ else
         --y-resolution   "${Y_RES}" \
         --filename       "${IMAGE}"
 
-    [[ -f "${IMAGE}" ]] || die "tools.generator did not produce ${IMAGE}"
+    [[ -f "${IMAGE}" ]] || die "generator did not produce ${IMAGE}"
     ok "Image generated: ${IMAGE}  ($(du -h "${IMAGE}" | cut -f1))"
 fi
 
-# =============================================================================
-# Step 2 — Edge detection + distance  [found_integration C++ binary]
-# =============================================================================
-
+# Step 2 — Edge detection + distance
 step "Step 2 — Edge detection + distance  [found_integration]"
 
 "${BIN}" \
@@ -143,14 +129,7 @@ SUCCESS=$("${PYTHON}" -c "import json; print(json.load(open('${RESULT}'))['succe
 
 ok "Result written: ${RESULT}"
 
-# =============================================================================
 # Step 3 — Analyze  [found-analyzer]
-# =============================================================================
-# found-analyzer is coming — it will be added to pyproject.toml as:
-#   found-analyzer = "found_CLI_tools.analyzer.main:main"
-# When it lands: the command below will run automatically.
-# =============================================================================
-
 step "Step 3 — Analyze results  [found-analyzer]"
 
 if [[ -f "${VENV}/bin/found-analyzer" ]]; then
@@ -162,10 +141,7 @@ else
     warn "found-analyzer not yet in found-tools (coming soon) — skipping"
 fi
 
-# =============================================================================
 # Summary
-# =============================================================================
-
 step "Summary"
 
 "${PYTHON}" - "${RESULT}" << 'EOF'

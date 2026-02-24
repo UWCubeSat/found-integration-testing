@@ -16,10 +16,7 @@
 
 namespace integration {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Edge detection + distance pipeline using FOUND's API
-// ─────────────────────────────────────────────────────────────────────────────
-
+// Edge detection + distance pipeline
 RunResult run_pipeline(const std::string& image_path,
                        const CameraConfig& camera,
                        double ground_truth_m) {
@@ -62,10 +59,10 @@ RunResult run_pipeline(const std::string& image_path,
             return r;
         }
 
-        // Create Camera (from FOUND's distance tests)
+        // Create Camera
         found::Camera cam(camera.focal_length, camera.pixel_size, width, height);
 
-        // Create distance algorithm (parameters from FOUND's integration tests)
+        // Create distance algorithm
         constexpr double RADIUS_OF_EARTH = 6378137.0;
         found::IterativeSphericalDistanceDeterminationAlgorithm algo(
             RADIUS_OF_EARTH,
@@ -95,10 +92,7 @@ RunResult run_pipeline(const std::string& image_path,
     return r;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Output
-// ─────────────────────────────────────────────────────────────────────────────
-
 void print_result(const RunResult& r) {
     if (!r.success) {
         std::cout << "[integration] FAILED: " << r.error_message << "\n";
