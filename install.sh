@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
+# install.sh
+#
+# Clones found, installs found-tools into a venv, builds the binary.
+#
+# Usage:
+#   bash install.sh
+# =============================================================================
 
 set -euo pipefail
 
@@ -46,11 +53,11 @@ else
     ok "Reusing venv: ${VENV}"
 fi
 
-# Install found-tools from git
-# The repo's pyproject.toml requires Python >=3.14, but this is a mistake.
-# Use --ignore-requires-python to bypass it until the team fixes pyproject.toml.
+# Install found-tools from the add-noise-generator-module branch
+# This branch has the actual generator implementation
+# Use --ignore-requires-python to bypass Python 3.14 requirement
 "${VENV}/bin/pip" install --quiet --ignore-requires-python \
-    "git+https://github.com/UWCubeSat/found-tools.git"
+    "git+https://github.com/UWCubeSat/found-tools.git@add-noise-generator-module"
 ok "found-tools installed"
 
 # Verify the entry point exists

@@ -99,14 +99,18 @@ log "Orientation: ${ORIENTATION}"
 # =============================================================================
 # Step 1 — Generate image  [found-generator]
 # =============================================================================
+# found-tools has tools.generator in the add-noise-generator-module branch
+# It's invoked as: python -m tools.generator [flags]
+# =============================================================================
 
 step "Step 1 — Generate image  [found-generator]"
 
 if [[ -n "${SUPPLIED_IMAGE}" ]]; then
     ok "Skipping — using supplied image"
 
-elif [[ -f "${VENV}/bin/found-generator" ]]; then
-    "${VENV}/bin/found-generator" \
+else
+    # Use tools.generator from the add-noise-generator-module branch
+    "${PYTHON}" -m found_CLI_tools.generator \
         --position    ${POSITION} \
         --orientation ${ORIENTATION} \
         --focal-length   "${FOCAL_LENGTH}" \
@@ -115,13 +119,8 @@ elif [[ -f "${VENV}/bin/found-generator" ]]; then
         --y-resolution   "${Y_RES}" \
         --filename       "${IMAGE}"
 
-    [[ -f "${IMAGE}" ]] || die "found-generator did not produce ${IMAGE}"
+    [[ -f "${IMAGE}" ]] || die "tools.generator did not produce ${IMAGE}"
     ok "Image generated: ${IMAGE}  ($(du -h "${IMAGE}" | cut -f1))"
-
-else
-    warn "found-generator not yet in found-tools (coming soon)"
-    warn "To run now, supply a pre-made image:"
-    die  "./run.sh --image /path/to/earth.png --position \"10378137 0 0\" --orientation \"140 0 0\""
 fi
 
 # =============================================================================
@@ -146,6 +145,10 @@ ok "Result written: ${RESULT}"
 
 # =============================================================================
 # Step 3 — Analyze  [found-analyzer]
+# =============================================================================
+# found-analyzer is coming — it will be added to pyproject.toml as:
+#   found-analyzer = "found_CLI_tools.analyzer.main:main"
+# When it lands: the command below will run automatically.
 # =============================================================================
 
 step "Step 3 — Analyze results  [found-analyzer]"
