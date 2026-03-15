@@ -1,11 +1,14 @@
-FROM ubuntu:latest
+FROM debian:bookworm-slim
 
 # Set environment variables for non-interactive installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install ca-certificates for HTTPS support in install.sh
+# Install ca-certificates and curl, then install uv (minimal base has no apt-get)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    rm -rf /var/lib/apt/lists/*
+ENV PATH="/root/.local/bin:$PATH"
 
 COPY install.sh /tmp/install.sh
 

@@ -9,19 +9,20 @@
 #
 # Usage:
 #   python run_batch.py --csv sim_metadata.csv --images-dir sim_images \
-#       --binary build/bin/found_integration --output results.csv
+#       --binary build/bin/pipeline_runner --output results.csv
 #   python run_batch.py ... --with-memory --max-rows 10
+#
+# Binary: pipeline_runner (--image, --focal-length, --pixel-size,
+#   --quaternion w x y z, --principle-axes a b c). Output: "POSITION x y z" on stdout.
 # =============================================================================
 
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -90,36 +91,62 @@ def ground_truth_m(row: pd.Series) -> float:
     return math.sqrt(x * x + y * y + z * z)
 
 
+# Stdout line from pipeline_runner: "POSITION x y z"
+POSITION_LINE_RE = re.compile(r"POSITION\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)")
+
+
+def _parse_position_stdout(stdout: str) -> dict:
+    """Parse 'POSITION x y z' from pipeline_runner stdout. Returns dict with out_pos_x/y/z or success=False."""
+    for line in stdout.splitlines():
+        m = POSITION_LINE_RE.match(line.strip())
+        if m:
+            return {
+                "success": True,
+                "out_pos_x": float(m.group(1)),
+                "out_pos_y": float(m.group(2)),
+                "out_pos_z": float(m.group(3)),
+            }
+    return {"success": False}
+
+
+def _build_pipeline_cmd(binary: Path, image_path: Path, row: pd.Series) -> list[str]:
+    """Build pipeline_runner argv from row (image path, focal length, pixel size, optional quaternion, principle-axes)."""
+    cmd = [
+        str(binary),
+        "--image", str(image_path),
+        "--focal-length", str(float(row["cam_focal_length"])),
+        "--pixel-size", str(float(row["cam_x_pixel_pitch"])),
+    ]
+    # Optional quaternion (w, x, y, z) from CSV qw, qx, qy, qz
+    qw, qx, qy, qz = row.get("qw"), row.get("qx"), row.get("qy"), row.get("qz")
+    if pd.notna(qw) and pd.notna(qx) and pd.notna(qy) and pd.notna(qz):
+        cmd += ["--quaternion", str(float(qw)), str(float(qx)), str(float(qy)), str(float(qz))]
+    # Optional principle axes (a, b, c) from CSV shape_axis_a/b/c
+    a, b, c = row.get("shape_axis_a"), row.get("shape_axis_b"), row.get("shape_axis_c")
+    if pd.notna(a) and pd.notna(b) and pd.notna(c):
+        cmd += ["--principle-axes", str(float(a)), str(float(b)), str(float(c))]
+    return cmd
+
+
 def run_one(
     binary: Path,
     image_path: Path,
-    ground_truth_m: float,
-    focal_length: float,
-    pixel_size: float,
+    row: pd.Series,
     with_memory: bool,
 ) -> tuple[bool, dict, float, int | None, int | None, int | None]:
     """
-    Run binary once. Returns (success, result_dict, runtime_sec, instructions, bytes_allocated, allocations).
-    On failure or parse error, result_dict has success=False; metric values may be None.
+    Run pipeline_runner once. Returns (success, result_dict, runtime_sec, instructions, bytes_allocated, allocations).
+    result_dict has out_pos_x/y/z when success; on failure or parse error, success=False; metric values may be None.
     """
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-        result_path = Path(f.name)
-    try:
-        cmd = [
-            str(binary),
-            "--image", str(image_path),
-            "--ground-truth", str(ground_truth_m),
-            "--focal-length", str(focal_length),
-            "--pixel-size", str(pixel_size),
-            "--output", str(result_path),
-        ]
-        runtime_sec = 0.0
-        instructions: int | None = None
-        bytes_allocated: int | None = None
-        allocations: int | None = None
+    cmd = _build_pipeline_cmd(binary, image_path, row)
+    runtime_sec = 0.0
+    instructions: int | None = None
+    bytes_allocated: int | None = None
+    allocations: int | None = None
+    stdout_str = ""
 
+    try:
         if with_memory:
-            # Valgrind wraps the binary; parse --stats from stderr
             valgrind_cmd = [
                 "valgrind", "--tool=memcheck", "--stats", "--quiet",
                 "--", *cmd
@@ -132,18 +159,15 @@ def run_one(
                 timeout=300,
             )
             runtime_sec = time.perf_counter() - t0
+            stdout_str = proc.stdout or ""
             stderr = proc.stderr or ""
-            # Parse "bytes allocated" and alloc/free counts from Valgrind summary
-            # e.g. "total heap usage: 1,234 allocs, 1,234 frees, 56,789 bytes allocated"
             m = re.search(r"(\d[\d,]*) allocs", stderr)
             if m:
                 allocations = int(m.group(1).replace(",", ""))
             m = re.search(r"(\d[\d,]*) bytes allocated", stderr)
             if m:
                 bytes_allocated = int(m.group(1).replace(",", ""))
-            ok = proc.returncode == 0
         else:
-            # perf stat -e instructions
             perf_cmd = ["perf", "stat", "-e", "instructions", "--", *cmd]
             t0 = time.perf_counter()
             proc = subprocess.run(
@@ -153,32 +177,21 @@ def run_one(
                 timeout=120,
             )
             runtime_sec = time.perf_counter() - t0
-            # perf writes to stderr: "    123456789  instructions"
+            stdout_str = proc.stdout or ""
             stderr = proc.stderr or ""
             m = re.search(r"[\s]*([\d,]+)\s+instructions", stderr)
             if m:
                 instructions = int(m.group(1).replace(",", ""))
-            ok = proc.returncode == 0
 
-        result: dict = {"success": False}
-        if result_path.exists():
-            try:
-                with open(result_path) as f:
-                    result = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
-            result_path.unlink(missing_ok=True)
-
+        if proc.returncode != 0:
+            return (False, _parse_position_stdout(stdout_str), runtime_sec, instructions, bytes_allocated, allocations)
+        result = _parse_position_stdout(stdout_str)
         return (result.get("success", False), result, runtime_sec, instructions, bytes_allocated, allocations)
     except subprocess.TimeoutExpired:
-        result_path.unlink(missing_ok=True)
         return (False, {"success": False}, 0.0, None, None, None)
     except FileNotFoundError as e:
-        result_path.unlink(missing_ok=True)
         print(f"run_batch: command not found: {e}", file=sys.stderr)
         raise
-    finally:
-        result_path.unlink(missing_ok=True)
 
 
 def main() -> None:
@@ -206,11 +219,8 @@ def main() -> None:
         if not image_path.exists():
             print(f"  row {idx}: image missing {image_path}", file=sys.stderr)
             continue
-        gt = ground_truth_m(row)
-        fl = float(row["cam_focal_length"])
-        ps = float(row["cam_x_pixel_pitch"])
         success, result, runtime_sec, instructions, bytes_allocated, allocations = run_one(
-            args.binary, image_path, gt, fl, ps, args.with_memory
+            args.binary, image_path, row, args.with_memory
         )
         df.at[idx, "runtime_sec"] = runtime_sec
         df.at[idx, "instructions"] = pd.NA if instructions is None else instructions
