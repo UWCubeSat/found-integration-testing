@@ -6,3 +6,6 @@ results/
 .venv/
 __pycache__/
 *.pyc
+.python-version
+*.png
+*.csv

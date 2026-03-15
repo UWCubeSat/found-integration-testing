@@ -10,6 +10,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <memory>
 
 #include "common/decimal.hpp"
 #include "common/pipeline/pipelines.hpp"
@@ -18,8 +19,6 @@
 #include "distance/distance.hpp"
 #include "distance/edge.hpp"
 #include <stb_image/stb_image.h>
-
-using found::decimal;  // for DECIMAL() macro
 
 namespace {
 
@@ -52,12 +51,14 @@ int main(int argc, char* argv[]) {
         DECIMAL(opts.quat_x),
         DECIMAL(opts.quat_y),
         DECIMAL(opts.quat_z));
-    found::InertialSymmetryEdgeDetectionAlgorithm inertial_edge_algo(
-        opts.gray_threshold, opts.line_count,
-        DECIMAL(opts.line_epsilon), opts.mask,
+    // Empty mask => library uses default half-plane mask (0,0,0,0,1,1,1,1)
+    Eigen::Matrix<decimal, Eigen::Dynamic, 1> empty_mask;
+    auto inertial_edge_algo = std::make_unique<found::InertialSymmetryEdgeDetectionAlgorithm>(
+        static_cast<uint8_t>(opts.gray_threshold), opts.line_count,
+        DECIMAL(opts.line_epsilon), empty_mask,
         DECIMAL(opts.sparseness));
     found::ZernikeEdgeDetectionAlgorithm edge_algo(
-        inertial_edge_algo, opts.window_size, DECIMAL(opts.transition_width));
+        std::move(inertial_edge_algo), opts.window_size, DECIMAL(opts.transition_width));
     found::Camera cam(DECIMAL(opts.focal_length),
                      DECIMAL(opts.pixel_size), width, height);
     found::Vec3 principle_axes(
@@ -72,9 +73,9 @@ int main(int argc, char* argv[]) {
     PositionVector pos = pipeline.Run(image);
 
     stbi_image_free(data);
-    double x = static_cast<double>(pos.x);
-    double y = static_cast<double>(pos.y);
-    double z = static_cast<double>(pos.z);
+    double x = static_cast<double>(pos.x());
+    double y = static_cast<double>(pos.y());
+    double z = static_cast<double>(pos.z());
 
     write_position_line(x, y, z, std::cout);
     // if (!opts.output_file.empty()) {

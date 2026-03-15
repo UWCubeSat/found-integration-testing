@@ -14,8 +14,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV="${ROOT}/.venv"
-PYTHON="${VENV}/bin/python"
 BIN="${ROOT}/build/bin/pipeline_runner"
 
 # Default paths (overridable via flags)
@@ -50,12 +48,8 @@ while [[ $i -le $# ]]; do
     esac
 done
 
-if [[ ! -d "${VENV}" ]]; then
-    echo "run_batch.sh: venv not found at ${VENV} — run: bash install.sh" >&2
-    exit 1
-fi
-if [[ ! -f "${PYTHON}" ]]; then
-    echo "run_batch.sh: python not found in venv — run: bash install.sh" >&2
+if ! command -v uv &>/dev/null; then
+    echo "run_batch.sh: uv not found — install uv or run: bash install.sh" >&2
     exit 1
 fi
 if [[ ! -f "${BIN}" ]]; then
@@ -71,7 +65,7 @@ if [[ ! -d "${IMAGES}" ]]; then
     exit 1
 fi
 
-exec "${PYTHON}" "${ROOT}/run_batch.py" \
+exec uv run --project "${ROOT}" "${ROOT}/run_batch.py" \
     --csv "${CSV}" \
     --images-dir "${IMAGES}" \
     --binary "${BIN}" \

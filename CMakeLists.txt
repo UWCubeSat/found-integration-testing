@@ -13,7 +13,7 @@ set(FOUND_INTEGRATION_BIN_DIR ${CMAKE_BINARY_DIR}/bin)
 
 # FOUND dependency (FetchContent)
 set(FOUND_GIT_REPOSITORY https://github.com/UWCubeSat/found.git)
-set(FOUND_GIT_TAG        main)
+set(FOUND_GIT_TAG        paper-cram-ah)
 
 # Zernike-cra runner (Zernike + InertialSymmetry → Spheroid; options in options.hpp)
 set(ZERNIKE_CRA_DIR ${FOUND_INTEGRATION_ROOT}/src/zernike-cra)

@@ -57,7 +57,7 @@ else
 fi
 INSTALL="$PM install -y"
 # List of packages to install
-PACKAGES="git g++ make valgrind"
+PACKAGES="git g++ cmake valgrind"
 
 # Install each package and echo the command
 for PACKAGE in $PACKAGES; do
