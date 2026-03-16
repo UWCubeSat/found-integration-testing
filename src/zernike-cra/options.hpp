@@ -3,7 +3,7 @@
 //
 // Minimal parameter set: image path, camera, principle axes (spheroid a,b,c),
 // orientation (quaternion), edge/distance params. Mirrors plan (Zernike+
-// InertialSymmetry, SpheroidDistanceDeterminationAlgorithm).
+// Sobel, SpheroidDistanceDeterminationAlgorithm).
 // =============================================================================
 
 #pragma once
@@ -33,7 +33,7 @@ struct PipelineOptions {
     double quat_z = 0.0;
     bool   use_quaternion = false;
 
-    // InertialSymmetryEdgeDetectionAlgorithm
+    // SobelEdgeDetectionAlgorithm (gray_threshold 0–255 mapped to normalized [0,1] highThreshold)
     unsigned char gray_threshold = 10;
     int           line_count     = 360;
     double        line_epsilon   = 1e-6;

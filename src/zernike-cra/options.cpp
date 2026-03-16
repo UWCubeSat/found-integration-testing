@@ -18,9 +18,9 @@ static void usage_text(const char* prog) {
         << "  --pixel-size       <m>      Camera pixel size    (default: 20e-6)\n"
         << "  --principle-axes   <a> <b> <c>  Spheroid semi-axes (m). Default: WGS84\n"
         << "  --quaternion       <w> <x> <y> <z>  Orientation quaternion (real, i, j, k)\n"
-        << "  --gray-threshold   <0-255>  InertialSymmetry gray threshold (default: 10)\n"
-        << "  --line-count       <n>      InertialSymmetry line count (default: 360)\n"
-        << "  --line-epsilon     <e>      InertialSymmetry line epsilon (default: 1e-6)\n"
+        << "  --gray-threshold   <0-255>  Sobel high threshold, mapped to [0,1] (default: 10)\n"
+        << "  --line-count       <n>      (unused with Sobel; kept for CLI compatibility)\n"
+        << "  --line-epsilon     <e>      (unused with Sobel; kept for CLI compatibility)\n"
         << "  --window-size      <n>      Zernike window size (default: 7)\n"
         << "  --transition-width <w>      Zernike transition width (default: 1.66)\n"
         << "  --help                     Print this help\n";

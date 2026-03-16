@@ -1,7 +1,7 @@
 // =============================================================================
-// zernike-cra main — Zernike + InertialSymmetry → Spheroid → position (plan)
+// zernike-cra main — Zernike + Sobel → Spheroid → position (plan)
 //
-// Pipeline: edge (Zernike over InertialSymmetry) →
+// Pipeline: edge (Zernike over SobelEdgeDetectionAlgorithm) →
 // SpheroidDistanceDeterminationAlgorithm → position via SequentialPipeline.
 // Output: one parseable line "POSITION x y z"; optional --output-file.
 // =============================================================================
@@ -51,14 +51,11 @@ int main(int argc, char* argv[]) {
         DECIMAL(opts.quat_x),
         DECIMAL(opts.quat_y),
         DECIMAL(opts.quat_z));
-    // Empty mask => library uses default half-plane mask (0,0,0,0,1,1,1,1)
-    Eigen::Matrix<decimal, Eigen::Dynamic, 1> empty_mask;
-    auto inertial_edge_algo = std::make_unique<found::InertialSymmetryEdgeDetectionAlgorithm>(
-        static_cast<uint8_t>(opts.gray_threshold), opts.line_count,
-        DECIMAL(opts.line_epsilon), empty_mask,
-        DECIMAL(opts.sparseness));
+    // Sobel high threshold: normalized [0,1] grayscale (e.g. 0.1–0.3); map gray_threshold [0,255] -> [0,1]
+    decimal sobel_high = DECIMAL(opts.gray_threshold) / DECIMAL(255.0);
+    auto sobel_edge_algo = std::make_unique<found::SobelEdgeDetectionAlgorithm>(sobel_high);
     found::ZernikeEdgeDetectionAlgorithm edge_algo(
-        std::move(inertial_edge_algo), opts.window_size, DECIMAL(opts.transition_width));
+        std::move(sobel_edge_algo), opts.window_size, DECIMAL(opts.transition_width));
     found::Camera cam(DECIMAL(opts.focal_length),
                      DECIMAL(opts.pixel_size), width, height);
     found::Vec3 principle_axes(
@@ -66,7 +63,7 @@ int main(int argc, char* argv[]) {
         DECIMAL(opts.principle_axis_b),
         DECIMAL(opts.principle_axis_c));
     found::SpheroidDistanceDeterminationAlgorithm distance_algo(
-        std::move(cam), principle_axes, orientation);
+        std::move(cam), principle_axes, orientation.conjugate());
     // Create the pipeline
     found::SequentialPipeline<found::Image, PositionVector, 2> pipeline;
     pipeline.AddStage(edge_algo).Complete(distance_algo);

@@ -13,9 +13,9 @@ set(FOUND_INTEGRATION_BIN_DIR ${CMAKE_BINARY_DIR}/bin)
 
 # FOUND dependency (FetchContent)
 set(FOUND_GIT_REPOSITORY https://github.com/UWCubeSat/found.git)
-set(FOUND_GIT_TAG        paper-cram-ah)
+set(FOUND_GIT_TAG        cram-sobel)
 
-# Zernike-cra runner (Zernike + InertialSymmetry → Spheroid; options in options.hpp)
+# Zernike-cra runner (Zernike + Sobel → Spheroid; options in options.hpp)
 set(ZERNIKE_CRA_DIR ${FOUND_INTEGRATION_ROOT}/src/zernike-cra)
 set(ZERNIKE_CRA_TARGET pipeline_runner)
 set(ZERNIKE_CRA_SOURCES
@@ -51,6 +51,25 @@ target_include_directories(${ZERNIKE_CRA_TARGET} PRIVATE
     ${FOUND_SOURCE_DIR}/src
 )
 set_target_properties(${ZERNIKE_CRA_TARGET}
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${FOUND_INTEGRATION_BIN_DIR}
+)
+
+# Edge-only runner (Zernike + Sobel → stdout "x y" per point; for plot_edges.py)
+set(ZERNIKE_SOBEL_DIR ${FOUND_INTEGRATION_ROOT}/src/zernike-sobel)
+set(EDGE_RUNNER_TARGET edge_runner)
+add_executable(${EDGE_RUNNER_TARGET}
+    ${ZERNIKE_SOBEL_DIR}/main.cpp
+    ${ZERNIKE_CRA_DIR}/options.cpp
+)
+target_link_libraries(${EDGE_RUNNER_TARGET} PRIVATE found::found_lib stb_image)
+target_include_directories(${EDGE_RUNNER_TARGET} PRIVATE
+    ${ZERNIKE_CRA_DIR}
+    ${ZERNIKE_SOBEL_DIR}
+    ${FOUND_SOURCE_DIR}
+    ${FOUND_SOURCE_DIR}/src
+)
+set_target_properties(${EDGE_RUNNER_TARGET}
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${FOUND_INTEGRATION_BIN_DIR}
 )

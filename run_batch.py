@@ -161,12 +161,15 @@ def run_one(
             runtime_sec = time.perf_counter() - t0
             stdout_str = proc.stdout or ""
             stderr = proc.stderr or ""
+            combined = stdout_str + "\n" + stderr
             m = re.search(r"(\d[\d,]*) allocs", stderr)
             if m:
                 allocations = int(m.group(1).replace(",", ""))
             m = re.search(r"(\d[\d,]*) bytes allocated", stderr)
             if m:
                 bytes_allocated = int(m.group(1).replace(",", ""))
+            result = _parse_position_stdout(combined)
+            return (result.get("success", False), result, runtime_sec, instructions, bytes_allocated, allocations)
         else:
             perf_cmd = ["perf", "stat", "-e", "instructions", "--", *cmd]
             t0 = time.perf_counter()
@@ -178,15 +181,23 @@ def run_one(
             )
             runtime_sec = time.perf_counter() - t0
             stdout_str = proc.stdout or ""
-            stderr = proc.stderr or ""
-            m = re.search(r"[\s]*([\d,]+)\s+instructions", stderr)
+            stderr_str = proc.stderr or ""
+            combined = stdout_str + "\n" + stderr_str
+            m = re.search(r"[\s]*([\d,]+)\s+instructions", stderr_str)
             if m:
                 instructions = int(m.group(1).replace(",", ""))
 
-        if proc.returncode != 0:
-            return (False, _parse_position_stdout(stdout_str), runtime_sec, instructions, bytes_allocated, allocations)
-        result = _parse_position_stdout(stdout_str)
-        return (result.get("success", False), result, runtime_sec, instructions, bytes_allocated, allocations)
+            if proc.returncode != 0:
+                t1 = time.perf_counter()
+                proc2 = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                runtime_sec = time.perf_counter() - t1
+                combined = (proc2.stdout or "") + "\n" + (proc2.stderr or "")
+                if proc2.returncode == 0:
+                    result = _parse_position_stdout(combined)
+                    return (result.get("success", False), result, runtime_sec, instructions, bytes_allocated, allocations)
+                return (False, _parse_position_stdout(combined), runtime_sec, instructions, bytes_allocated, allocations)
+            result = _parse_position_stdout(combined)
+            return (result.get("success", False), result, runtime_sec, instructions, bytes_allocated, allocations)
     except subprocess.TimeoutExpired:
         return (False, {"success": False}, 0.0, None, None, None)
     except FileNotFoundError as e:
