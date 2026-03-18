@@ -9,18 +9,22 @@
 
 namespace pipeline {
 
+bool g_help_requested = false;
+
 static void usage_text(const char* prog) {
     std::cout
-        << "Usage: " << prog << " --image <path> [OPTIONS]\n\n"
-        << "  --image            <path>   Input image (Earth limb)\n"
-        << "  --output-file      <path>   Optional: write position line to file\n"
+        << "Usage: " << prog << " --pipeline <mode> [OPTIONS]\n\n"
+        << "  --pipeline         <mode>   Pipeline: edge | distance | full (default: full)\n"
+        << "  --image            <path>   Input image (required for edge/full)\n"
+        << "  --edges-file       <path>   Edge points file for distance mode (lines \"x y\")\n"
+        << "  --width            <n>      Image width for distance mode (no image)\n"
+        << "  --height           <n>      Image height for distance mode (no image)\n"
+        << "  --output-file      <path>   Optional: write position/edges to file\n"
         << "  --focal-length     <m>      Camera focal length  (default: 85e-3)\n"
         << "  --pixel-size       <m>      Camera pixel size    (default: 20e-6)\n"
         << "  --principle-axes   <a> <b> <c>  Spheroid semi-axes (m). Default: WGS84\n"
         << "  --quaternion       <w> <x> <y> <z>  Orientation quaternion (real, i, j, k)\n"
-        << "  --gray-threshold   <0-255>  Sobel high threshold, mapped to [0,1] (default: 10)\n"
-        << "  --line-count       <n>      (unused with Sobel; kept for CLI compatibility)\n"
-        << "  --line-epsilon     <e>      (unused with Sobel; kept for CLI compatibility)\n"
+        << "  --gray-threshold   <0-255>  Sobel high threshold (default: 10)\n"
         << "  --window-size      <n>      Zernike window size (default: 7)\n"
         << "  --transition-width <w>      Zernike transition width (default: 1.66)\n"
         << "  --help                     Print this help\n";
@@ -30,13 +34,41 @@ void Usage(const char* prog) {
     usage_text(prog);
 }
 
+static bool parse_pipeline_mode(const char* arg, PipelineOptions* out) {
+    if (std::strcmp(arg, "edge") == 0) {
+        out->pipeline_mode = PipelineMode::kEdge;
+        return true;
+    }
+    if (std::strcmp(arg, "distance") == 0) {
+        out->pipeline_mode = PipelineMode::kDistance;
+        return true;
+    }
+    if (std::strcmp(arg, "full") == 0) {
+        out->pipeline_mode = PipelineMode::kFull;
+        return true;
+    }
+    return false;
+}
+
 bool ParseOptions(int argc, char* argv[], PipelineOptions* out) {
     if (out == nullptr) return false;
     *out = PipelineOptions{};
 
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--image") == 0 && i + 1 < argc) {
+        if (std::strcmp(argv[i], "--pipeline") == 0 && i + 1 < argc) {
+            if (!parse_pipeline_mode(argv[++i], out)) {
+                std::cerr << "Unknown --pipeline mode (use edge | distance | full)\n";
+                Usage(argv[0]);
+                return false;
+            }
+        } else if (std::strcmp(argv[i], "--image") == 0 && i + 1 < argc) {
             out->image_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--edges-file") == 0 && i + 1 < argc) {
+            out->edges_file = argv[++i];
+        } else if (std::strcmp(argv[i], "--width") == 0 && i + 1 < argc) {
+            out->image_width = std::stoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--height") == 0 && i + 1 < argc) {
+            out->image_height = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--output-file") == 0 && i + 1 < argc) {
             out->output_file = argv[++i];
         } else if (std::strcmp(argv[i], "--focal-length") == 0 && i + 1 < argc) {
@@ -64,6 +96,7 @@ bool ParseOptions(int argc, char* argv[], PipelineOptions* out) {
         } else if (std::strcmp(argv[i], "--transition-width") == 0 && i + 1 < argc) {
             out->transition_width = std::stod(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0) {
+            g_help_requested = true;
             Usage(argv[0]);
             return false;  // caller should exit 0
         } else {
@@ -73,6 +106,18 @@ bool ParseOptions(int argc, char* argv[], PipelineOptions* out) {
         }
     }
 
+    // Validation by mode
+    if (out->pipeline_mode == PipelineMode::kDistance) {
+        if (out->edges_file.empty()) {
+            std::cerr << "Pipeline mode 'distance' requires --edges-file\n";
+            return false;
+        }
+        if (out->image_width <= 0 || out->image_height <= 0) {
+            std::cerr << "Pipeline mode 'distance' requires --width and --height\n";
+            return false;
+        }
+        return true;
+    }
     return !out->image_path.empty();
 }
 

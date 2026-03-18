@@ -12,10 +12,22 @@
 
 namespace pipeline {
 
+/** Pipeline mode: edge (image -> points), distance (points -> position), full (image -> position). */
+enum class PipelineMode { kEdge, kDistance, kFull };
+
 struct PipelineOptions {
+    // Pipeline selection
+    PipelineMode pipeline_mode = PipelineMode::kFull;
+
     // I/O
     std::string image_path;
     std::string output_file;
+    /** Path to edge points file for --pipeline distance (lines "x y"). */
+    std::string edges_file;
+
+    /** Image width/height for --pipeline distance (no image loaded). */
+    int image_width  = 0;
+    int image_height = 0;
 
     // Camera (focal length, pixel size; resolution from image)
     double focal_length = 85e-3;
@@ -45,7 +57,10 @@ struct PipelineOptions {
     double transition_width = 1.66;
 };
 
-// Returns true if parsing succeeded and options are valid (e.g. image_path set).
+/** If ParseOptions returns false, set to true when --help was requested. */
+extern bool g_help_requested;
+
+// Returns true if parsing succeeded and options are valid.
 bool ParseOptions(int argc, char* argv[], PipelineOptions* out);
 
 // Print usage to stdout.
