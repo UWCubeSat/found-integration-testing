@@ -16,7 +16,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from cra_analysis import _build_distance_cmd, _parse_position_stdout
+# Allow importing from scripts.distance when run as scripts/debug_trouble_rows.py
+_repo_root = Path(__file__).resolve().parent.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+from scripts.distance.simulation import _build_distance_cmd, _parse_position_stdout
 from limb.simulation.edge.conic import _conic_matrix_to_coeffs
 from limb.simulation.metadata.orchestrate import (
     _conic_from_row,
@@ -31,7 +35,6 @@ def run_one_with_verbose(
     points_xy: np.ndarray,
     edges_path: Path | None,
     *,
-    conjugate_quaternion: bool = False,
     edge_decimals: int = 0,
 ) -> tuple[bool, dict, str]:
     """Run distance pipeline for one row; optionally save edges. Return (success, result, full_output)."""
@@ -56,9 +59,7 @@ def run_one_with_verbose(
                     f.write(f"{x:.{edge_decimals}f} {y:.{edge_decimals}f}\n")
                 else:
                     f.write(f"{x:.17g} {y:.17g}\n")
-        cmd = _build_distance_cmd(
-            binary, path, row, conjugate_quaternion=conjugate_quaternion
-        )
+        cmd = _build_distance_cmd(binary, path, row)
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=60
         )
@@ -192,11 +193,6 @@ def parse_args() -> argparse.Namespace:
         help="Decimal places for edge coordinates (0 = integer pixels). Default: 0.",
     )
     p.add_argument(
-        "--conjugate-quaternion",
-        action="store_true",
-        help="Conjugate quaternion before passing to pipeline (match cra_analysis if used there).",
-    )
-    p.add_argument(
         "--quiet",
         action="store_true",
         help="Only print one-line summary per row; do not print full pipeline output.",
@@ -257,7 +253,6 @@ def main() -> None:
             row,
             points,
             edges_path,
-            conjugate_quaternion=args.conjugate_quaternion,
             edge_decimals=args.edge_decimals,
         )
 

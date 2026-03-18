@@ -7,6 +7,7 @@ run the distance pipeline (edges -> POSITION), and save results to CSV.
 from __future__ import annotations
 
 import argparse
+from typing import Callable
 import re
 import subprocess
 import sys
@@ -19,11 +20,74 @@ from scipy.spatial.transform import Rotation as R
 
 from limb.simulation.metadata.orchestrate import _setup_simulation, points_from_row
 from limb.simulation.edge.conic import add_point_noise
+from limb.simulation.analysis.metrics import fill_pixel_metrics
 from limb.utils._camera import Camera
 
 POSITION_LINE_RE = re.compile(
     r"POSITION\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)"
 )
+
+# Section header in simulations.txt: [name]
+SIMULATION_SECTION_RE = re.compile(r"^\[\s*([^\]]+)\s*\]$")
+
+
+def _load_simulation_config(file_path: Path, simulation_name: str) -> dict[str, str]:
+    """Parse simulations.txt; return key=value dict for the given [simulation_name] section."""
+    config: dict[str, str] = {}
+    current: str | None = None
+    with open(file_path, "r") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            m = SIMULATION_SECTION_RE.match(line)
+            if m:
+                current = m.group(1).strip()
+                continue
+            if current != simulation_name:
+                continue
+            if "=" in line:
+                key, _, val = line.partition("=")
+                config[key.strip()] = val.strip()
+    return config
+
+
+def _apply_simulation_config(args: argparse.Namespace, config: dict[str, str]) -> None:
+    """Overlay config from simulations.txt onto args (mutates args)."""
+    def flist(s: str) -> list[float]:
+        return [float(x) for x in s.split()]
+    def ilist(s: str) -> list[int]:
+        return [int(x) for x in s.split()]
+    def f3(s: str) -> tuple[float, float, float]:
+        a = flist(s)
+        if len(a) != 3:
+            raise ValueError(f"semi_axes must have 3 values, got {len(a)}")
+        return (a[0], a[1], a[2])
+    def truth(s: str) -> bool:
+        return s.strip().lower() in ("1", "true", "yes")
+
+    key_handlers: dict[str, Callable[[str], None]] = {
+        "semi_axes": lambda v: setattr(args, "semi_axes", f3(v)),
+        "fovs": lambda v: setattr(args, "fovs", flist(v)),
+        "resolutions": lambda v: setattr(args, "resolutions", ilist(v)),
+        "distances": lambda v: setattr(args, "distances", flist(v)),
+        "num_earth_points": lambda v: setattr(args, "num_earth_points", int(v)),
+        "num_positions_per_point": lambda v: setattr(args, "num_positions_per_point", int(v)),
+        "num_spins_per_position": lambda v: setattr(args, "num_spins_per_position", int(v)),
+        "num_radials_per_spin": lambda v: setattr(args, "num_radials_per_spin", int(v)),
+        "atmosphere_blur": lambda v: setattr(args, "atmosphere_blur", float(v)),
+        "false_points": lambda v: setattr(args, "n_false_points", int(v)),
+        "conjugate_quaternion": lambda v: setattr(args, "conjugate_quaternion", truth(v)),
+        "edge_decimals": lambda v: setattr(args, "edge_decimals", int(v)),
+        "regression": lambda v: setattr(args, "regression", v.strip().lower()),
+        "ridge_lambda": lambda v: setattr(args, "ridge_lambda", float(v)),
+        "ransac_residual_threshold": lambda v: setattr(args, "ransac_residual_threshold", float(v)),
+        "ransac_max_iterations": lambda v: setattr(args, "ransac_max_iterations", int(v)),
+        "ransac_min_samples": lambda v: setattr(args, "ransac_min_samples", int(v)),
+    }
+    for key, val in config.items():
+        if key in key_handlers:
+            key_handlers[key](val)
 
 
 def _parse_position_stdout(stdout: str) -> dict:
@@ -45,11 +109,14 @@ def _build_distance_cmd(
     edges_file: Path,
     row: pd.Series,
     *,
+    regression: str = "tls",
+    ridge_lambda: float = 1e-6,
+    ransac_residual_threshold: float = 1e-4,
+    ransac_max_iterations: int = 100,
+    ransac_min_samples: int = 0,
     conjugate_quaternion: bool = False,
 ) -> list[str]:
-    """Build argv for --pipeline distance (edges file + camera/axes/quat).
-    If conjugate_quaternion: pass (qw, -qx, -qy, -qz) to FOUND; else pass df quat as-is.
-    """
+    """Build argv for --pipeline distance (edges file + camera/axes/quat + regression)."""
     w = int(row["cam_x_resolution"])
     h = int(row["cam_y_resolution"])
     cmd = [
@@ -60,14 +127,20 @@ def _build_distance_cmd(
         "--height", str(h),
         "--focal-length", str(float(row["cam_focal_length"])),
         "--pixel-size", str(float(row["cam_x_pixel_pitch"])),
+        "--regression", regression,
     ]
-    # Quaternion from df (qw, qx, qy, qz). If flag set, conjugate before passing to FOUND.
+    if regression == "ridge":
+        cmd += ["--ridge-lambda", str(ridge_lambda)]
+    elif regression == "ransac":
+        cmd += [
+            "--ransac-residual-threshold", str(ransac_residual_threshold),
+            "--ransac-max-iterations", str(ransac_max_iterations),
+        ]
+        if ransac_min_samples > 0:
+            cmd += ["--ransac-min-samples", str(ransac_min_samples)]
     qw, qx, qy, qz = row.get("qw"), row.get("qx"), row.get("qy"), row.get("qz")
     if pd.notna(qw) and pd.notna(qx) and pd.notna(qy) and pd.notna(qz):
-        qw, qx, qy, qz = float(qw), float(qx), float(qy), float(qz)
-        if conjugate_quaternion:
-            qx, qy, qz = -qx, -qy, -qz
-        cmd += ["--quaternion", str(qw), str(qx), str(qy), str(qz)]
+        cmd += ["--quaternion", str(float(qw)), str(float(qx)), str(float(qy)), str(float(qz))]
     a, b, c = row.get("shape_axis_a"), row.get("shape_axis_b"), row.get("shape_axis_c")
     if pd.notna(a) and pd.notna(b) and pd.notna(c):
         cmd += ["--principle-axes", str(float(a)), str(float(b)), str(float(c))]
@@ -79,8 +152,12 @@ def run_distance_pipeline(
     row: pd.Series,
     points_xy: np.ndarray,
     *,
-    conjugate_quaternion: bool = False,
     edge_decimals: int = 0,
+    regression: str = "tls",
+    ridge_lambda: float = 1e-6,
+    ransac_residual_threshold: float = 1e-4,
+    ransac_max_iterations: int = 100,
+    ransac_min_samples: int = 0,
 ) -> tuple[bool, dict]:
     """Write edge points to a temp file, run distance pipeline, return (success, result_dict)."""
     if points_xy.shape[0] < 3:
@@ -99,7 +176,14 @@ def run_distance_pipeline(
                 f.write(f"{x:.17g} {y:.17g}\n")
         path = Path(f.name)
     try:
-        cmd = _build_distance_cmd(binary, path, row, conjugate_quaternion=conjugate_quaternion)
+        cmd = _build_distance_cmd(
+            binary, path, row,
+            regression=regression,
+            ridge_lambda=ridge_lambda,
+            ransac_residual_threshold=ransac_residual_threshold,
+            ransac_max_iterations=ransac_max_iterations,
+            ransac_min_samples=ransac_min_samples,
+        )
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -183,19 +267,73 @@ def parse_args() -> argparse.Namespace:
         help="Output CSV path.",
     )
     p.add_argument(
-        "--conjugate-quaternion",
-        action="store_true",
-        help="Conjugate quaternion before passing to FOUND; if not set, pass df quaternion as-is.",
-    )
-    p.add_argument(
         "--edge-decimals",
         type=int,
         default=0,
         metavar="N",
         help="Decimal places for edge point coords (0 = truncate to integer pixels). Default: 0.",
     )
+    p.add_argument(
+        "--regression",
+        type=str,
+        default="tls",
+        choices=("tls", "ols", "ridge", "ransac"),
+        help="Distance-stage regression (default: tls).",
+    )
+    p.add_argument(
+        "--ridge-lambda",
+        type=float,
+        default=1e-6,
+        metavar="L",
+        help="Ridge L2 regularization (for --regression ridge).",
+    )
+    p.add_argument(
+        "--ransac-residual-threshold",
+        type=float,
+        default=1e-4,
+        metavar="T",
+        help="RANSAC max residual for inlier (for --regression ransac).",
+    )
+    p.add_argument(
+        "--ransac-max-iterations",
+        type=int,
+        default=100,
+        metavar="N",
+        help="RANSAC max iterations (for --regression ransac).",
+    )
+    p.add_argument(
+        "--ransac-min-samples",
+        type=int,
+        default=0,
+        metavar="N",
+        help="RANSAC min samples per trial (0 = M-1, for --regression ransac).",
+    )
     p.add_argument("--seed", type=int, default=None, help="Random seed for point noise.")
-    return p.parse_args()
+    p.add_argument(
+        "--simulation-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Path to simulations.txt; use with --simulation-name to load constants from file.",
+    )
+    p.add_argument(
+        "--simulation-name",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Simulation section name in --simulation-file (e.g. baseline).",
+    )
+    args = p.parse_args()
+    if args.simulation_file is not None and args.simulation_name is not None:
+        if not args.simulation_file.is_file():
+            print(f"distance_analysis: simulation file not found: {args.simulation_file}", file=sys.stderr)
+            sys.exit(1)
+        config = _load_simulation_config(args.simulation_file, args.simulation_name)
+        if not config:
+            print(f"distance_analysis: no section [{args.simulation_name}] in {args.simulation_file}", file=sys.stderr)
+            sys.exit(1)
+        _apply_simulation_config(args, config)
+    return args
 
 
 def main() -> None:
@@ -207,8 +345,6 @@ def main() -> None:
     if args.edge_decimals < 0:
         print("cra_analysis: --edge-decimals must be >= 0", file=sys.stderr)
         sys.exit(1)
-
-    rng = np.random.default_rng(args.seed)
 
     # Build simulation DataFrame (no I/O)
     df_simulation = _setup_simulation(
@@ -239,12 +375,17 @@ def main() -> None:
             ),
             dtype=np.float64,
         )
+        df_simulation.at[idx, "n_edge_points"] = points.shape[0]
         success, result = run_distance_pipeline(
             args.binary,
             row,
             points,
-            conjugate_quaternion=args.conjugate_quaternion,
             edge_decimals=args.edge_decimals,
+            regression=args.regression,
+            ridge_lambda=args.ridge_lambda,
+            ransac_residual_threshold=args.ransac_residual_threshold,
+            ransac_max_iterations=args.ransac_max_iterations,
+            ransac_min_samples=args.ransac_min_samples,
         )
         if success:
             df_simulation.at[idx, "out_pos_x"] = result["out_pos_x"]
@@ -254,6 +395,9 @@ def main() -> None:
             df_simulation.at[idx, "out_pos_x"] = np.nan
             df_simulation.at[idx, "out_pos_y"] = np.nan
             df_simulation.at[idx, "out_pos_z"] = np.nan
+        
+
+    df = fill_pixel_metrics(df_simulation)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     df_simulation.to_csv(args.output, index=True)
