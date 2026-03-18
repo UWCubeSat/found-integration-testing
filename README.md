@@ -5,6 +5,40 @@ cmake -S . -B build/ && cmake --build build
 uv lock --upgrade-package limb
 ```
 
+The pipeline binary supports choosing the distance-stage regression via `--regression <alg>` (`tls` | `ols` | `ridge` | `ransac`; default: `tls`). For `ridge` use `--ridge-lambda <λ>`; for `ransac` use `--ransac-residual-threshold`, `--ransac-max-iterations`, and optionally `--ransac-min-samples`. Run `build/bin/pipeline_runner --help` for details.
+
+### run_batch.py
+
+Example CLI calls for each regression option. Required: `--csv`, `--images-dir`, `--binary`, `--output`. Optional: `--max-rows`, `--with-memory`.
+
+**TLS (default):**
+```bash
+uv run python run_batch.py --csv sim_metadata.csv --images-dir sim_images --binary build/bin/pipeline_runner --output results_tls.csv --regression tls
+```
+
+**OLS:**
+```bash
+uv run python run_batch.py --csv sim_metadata.csv --images-dir sim_images --binary build/bin/pipeline_runner --output results_ols.csv --regression ols
+```
+
+**Ridge (default λ = 1e-6):**
+```bash
+uv run python run_batch.py --csv sim_metadata.csv --images-dir sim_images --binary build/bin/pipeline_runner --output results_ridge.csv --regression ridge
+```
+With custom λ:
+```bash
+uv run python run_batch.py --csv sim_metadata.csv --images-dir sim_images --binary build/bin/pipeline_runner --output results_ridge.csv --regression ridge --ridge-lambda 1e-5
+```
+
+**RANSAC (defaults: τ=1e-4, max_iter=100, min_samples=0):**
+```bash
+uv run python run_batch.py --csv sim_metadata.csv --images-dir sim_images --binary build/bin/pipeline_runner --output results_ransac.csv --regression ransac
+```
+With custom RANSAC options:
+```bash
+uv run python run_batch.py --csv sim_metadata.csv --images-dir sim_images --binary build/bin/pipeline_runner --output results_ransac.csv --regression ransac --ransac-residual-threshold 5e-5 --ransac-max-iterations 200 --ransac-min-samples 3
+```
+
 cra analysis comand
 
 ```

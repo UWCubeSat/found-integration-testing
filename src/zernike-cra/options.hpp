@@ -15,6 +15,14 @@ namespace pipeline {
 /** Pipeline mode: edge (image -> points), distance (points -> position), full (image -> position). */
 enum class PipelineMode { kEdge, kDistance, kFull };
 
+/** Regression used in the distance stage (spheroid fit). Default is TLS. */
+enum class RegressionKind {
+    kTls,    /** Total least squares (default). */
+    kOls,    /** Ordinary least squares. */
+    kRidge,  /** Ridge regression; requires --ridge-lambda. */
+    kRansac, /** RANSAC; requires --ransac-residual-threshold and --ransac-max-iterations. */
+};
+
 struct PipelineOptions {
     // Pipeline selection
     PipelineMode pipeline_mode = PipelineMode::kFull;
@@ -55,6 +63,15 @@ struct PipelineOptions {
     // ZernikeEdgeDetectionAlgorithm
     int    window_size     = 7;
     double transition_width = 1.66;
+
+    // Distance stage regression (--regression tls|ols|ridge|ransac)
+    RegressionKind regression = RegressionKind::kTls;
+    // Ridge: --ridge-lambda
+    double ridge_lambda = 1e-6;
+    // RANSAC: --ransac-residual-threshold, --ransac-max-iterations, --ransac-min-samples
+    double ransac_residual_threshold = 1e-4;
+    int    ransac_max_iterations     = 100;
+    int    ransac_min_samples        = 0;  // 0 = use (M-1) for unique OLS
 };
 
 /** If ParseOptions returns false, set to true when --help was requested. */

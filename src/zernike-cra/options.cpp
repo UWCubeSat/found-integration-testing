@@ -27,6 +27,12 @@ static void usage_text(const char* prog) {
         << "  --gray-threshold   <0-255>  Sobel high threshold (default: 10)\n"
         << "  --window-size      <n>      Zernike window size (default: 7)\n"
         << "  --transition-width <w>      Zernike transition width (default: 1.66)\n"
+        << "  Distance stage regression (for distance/full pipeline):\n"
+        << "  --regression       <alg>   tls | ols | ridge | ransac (default: tls)\n"
+        << "  --ridge-lambda     <λ>     Ridge L2 regularization (for --regression ridge, default: 1e-6)\n"
+        << "  --ransac-residual-threshold <τ>  Max residual for inlier (for --regression ransac, default: 1e-4)\n"
+        << "  --ransac-max-iterations <n>       RANSAC trials (for --regression ransac, default: 100)\n"
+        << "  --ransac-min-samples <n>          Min rows per trial (0 = M-1, default: 0)\n"
         << "  --help                     Print this help\n";
 }
 
@@ -45,6 +51,26 @@ static bool parse_pipeline_mode(const char* arg, PipelineOptions* out) {
     }
     if (std::strcmp(arg, "full") == 0) {
         out->pipeline_mode = PipelineMode::kFull;
+        return true;
+    }
+    return false;
+}
+
+static bool parse_regression_kind(const char* arg, PipelineOptions* out) {
+    if (std::strcmp(arg, "tls") == 0) {
+        out->regression = RegressionKind::kTls;
+        return true;
+    }
+    if (std::strcmp(arg, "ols") == 0) {
+        out->regression = RegressionKind::kOls;
+        return true;
+    }
+    if (std::strcmp(arg, "ridge") == 0) {
+        out->regression = RegressionKind::kRidge;
+        return true;
+    }
+    if (std::strcmp(arg, "ransac") == 0) {
+        out->regression = RegressionKind::kRansac;
         return true;
     }
     return false;
@@ -95,6 +121,20 @@ bool ParseOptions(int argc, char* argv[], PipelineOptions* out) {
             out->window_size = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--transition-width") == 0 && i + 1 < argc) {
             out->transition_width = std::stod(argv[++i]);
+        } else if (std::strcmp(argv[i], "--regression") == 0 && i + 1 < argc) {
+            if (!parse_regression_kind(argv[++i], out)) {
+                std::cerr << "Unknown --regression (use tls | ols | ridge | ransac)\n";
+                Usage(argv[0]);
+                return false;
+            }
+        } else if (std::strcmp(argv[i], "--ridge-lambda") == 0 && i + 1 < argc) {
+            out->ridge_lambda = std::stod(argv[++i]);
+        } else if (std::strcmp(argv[i], "--ransac-residual-threshold") == 0 && i + 1 < argc) {
+            out->ransac_residual_threshold = std::stod(argv[++i]);
+        } else if (std::strcmp(argv[i], "--ransac-max-iterations") == 0 && i + 1 < argc) {
+            out->ransac_max_iterations = std::stoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--ransac-min-samples") == 0 && i + 1 < argc) {
+            out->ransac_min_samples = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0) {
             g_help_requested = true;
             Usage(argv[0]);
@@ -116,9 +156,25 @@ bool ParseOptions(int argc, char* argv[], PipelineOptions* out) {
             std::cerr << "Pipeline mode 'distance' requires --width and --height\n";
             return false;
         }
-        return true;
     }
-    return !out->image_path.empty();
+
+    // Validation for regression options
+    if (out->regression == RegressionKind::kRidge && out->ridge_lambda < 0) {
+        std::cerr << "--ridge-lambda must be non-negative\n";
+        return false;
+    }
+    if (out->regression == RegressionKind::kRansac) {
+        if (out->ransac_max_iterations <= 0) {
+            std::cerr << "--ransac-max-iterations must be positive\n";
+            return false;
+        }
+        if (out->ransac_min_samples < 0) {
+            std::cerr << "--ransac-min-samples must be non-negative\n";
+            return false;
+        }
+    }
+
+    return (out->pipeline_mode == PipelineMode::kDistance) || !out->image_path.empty();
 }
 
 }  // namespace pipeline

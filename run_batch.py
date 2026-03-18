@@ -12,8 +12,10 @@
 #       --binary build/bin/pipeline_runner --output results.csv
 #   python run_batch.py ... --with-memory --max-rows 10
 #
-# Binary: pipeline_runner (--image, --focal-length, --pixel-size,
-#   --quaternion w x y z, --principle-axes a b c). Output: "POSITION x y z" on stdout.
+# Binary: FOUND (--pipeline full | edge | distance). For full: --image, --focal-length,
+#   --pixel-size, --quaternion w x y z, --principle-axes a b c. Distance-stage regression:
+#   --regression tls|ols|ridge|ransac with optional --ridge-lambda, --ransac-* flags.
+#   Output: "POSITION x y z" on stdout.
 # =============================================================================
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ import time
 from pathlib import Path
 
 import pandas as pd
+
+from limb.simulation.analysis.metrics import fill_pixel_metrics
 
 # Canonical column set (plan: CSV column layout final)
 INPUT_COLUMNS = [
@@ -66,6 +70,41 @@ def parse_args() -> argparse.Namespace:
         help="Run under Valgrind memcheck to collect bytes_allocated / allocations (slow)",
     )
     p.add_argument("--max-rows", type=int, default=None, help="Limit number of rows (for testing)")
+    # Distance-stage regression (pipeline_runner --regression and related flags)
+    p.add_argument(
+        "--regression",
+        choices=("tls", "ols", "ridge", "ransac"),
+        default="tls",
+        help="Regression for distance stage (default: tls)",
+    )
+    p.add_argument(
+        "--ridge-lambda",
+        type=float,
+        default=1e-6,
+        metavar="λ",
+        help="Ridge L2 regularization when --regression ridge (default: 1e-6)",
+    )
+    p.add_argument(
+        "--ransac-residual-threshold",
+        type=float,
+        default=1e-4,
+        metavar="τ",
+        help="RANSAC inlier residual threshold when --regression ransac (default: 1e-4)",
+    )
+    p.add_argument(
+        "--ransac-max-iterations",
+        type=int,
+        default=100,
+        metavar="n",
+        help="RANSAC max trials when --regression ransac (default: 100)",
+    )
+    p.add_argument(
+        "--ransac-min-samples",
+        type=int,
+        default=0,
+        metavar="n",
+        help="RANSAC min rows per trial (0 = M-1) when --regression ransac (default: 0)",
+    )
     return p.parse_args()
 
 
@@ -109,10 +148,21 @@ def _parse_position_stdout(stdout: str) -> dict:
     return {"success": False}
 
 
-def _build_pipeline_cmd(binary: Path, image_path: Path, row: pd.Series) -> list[str]:
-    """Build pipeline_runner argv from row (image path, focal length, pixel size, optional quaternion, principle-axes)."""
+def _build_pipeline_cmd(
+    binary: Path,
+    image_path: Path,
+    row: pd.Series,
+    *,
+    regression: str = "tls",
+    ridge_lambda: float = 1e-6,
+    ransac_residual_threshold: float = 1e-4,
+    ransac_max_iterations: int = 100,
+    ransac_min_samples: int = 0,
+) -> list[str]:
+    """Build FOUND binary argv for --pipeline full (image -> POSITION)."""
     cmd = [
         str(binary),
+        "--pipeline", "full",
         "--image", str(image_path),
         "--focal-length", str(float(row["cam_focal_length"])),
         "--pixel-size", str(float(row["cam_x_pixel_pitch"])),
@@ -125,6 +175,16 @@ def _build_pipeline_cmd(binary: Path, image_path: Path, row: pd.Series) -> list[
     a, b, c = row.get("shape_axis_a"), row.get("shape_axis_b"), row.get("shape_axis_c")
     if pd.notna(a) and pd.notna(b) and pd.notna(c):
         cmd += ["--principle-axes", str(float(a)), str(float(b)), str(float(c))]
+    # Distance-stage regression
+    cmd += ["--regression", regression]
+    if regression == "ridge":
+        cmd += ["--ridge-lambda", str(ridge_lambda)]
+    elif regression == "ransac":
+        cmd += [
+            "--ransac-residual-threshold", str(ransac_residual_threshold),
+            "--ransac-max-iterations", str(ransac_max_iterations),
+            "--ransac-min-samples", str(ransac_min_samples),
+        ]
     return cmd
 
 
@@ -133,12 +193,24 @@ def run_one(
     image_path: Path,
     row: pd.Series,
     with_memory: bool,
+    *,
+    regression: str = "tls",
+    ridge_lambda: float = 1e-6,
+    ransac_residual_threshold: float = 1e-4,
+    ransac_max_iterations: int = 100,
+    ransac_min_samples: int = 0,
 ) -> tuple[bool, dict, float, int | None, int | None, int | None]:
-    """
-    Run pipeline_runner once. Returns (success, result_dict, runtime_sec, instructions, bytes_allocated, allocations).
+    """Run FOUND binary on one row; return (success, result_dict, runtime_sec, instructions, bytes_allocated, allocations).
     result_dict has out_pos_x/y/z when success; on failure or parse error, success=False; metric values may be None.
     """
-    cmd = _build_pipeline_cmd(binary, image_path, row)
+    cmd = _build_pipeline_cmd(
+        binary, image_path, row,
+        regression=regression,
+        ridge_lambda=ridge_lambda,
+        ransac_residual_threshold=ransac_residual_threshold,
+        ransac_max_iterations=ransac_max_iterations,
+        ransac_min_samples=ransac_min_samples,
+    )
     runtime_sec = 0.0
     instructions: int | None = None
     bytes_allocated: int | None = None
@@ -223,7 +295,9 @@ def main() -> None:
         df = df.iloc[: args.max_rows]
 
     n = len(df)
-    print(f"run_batch: processing {n} rows (binary={args.binary}, with_memory={args.with_memory})")
+    print(
+        f"run_batch: processing {n} rows (binary={args.binary}, with_memory={args.with_memory}, regression={args.regression})"
+    )
 
     for i, (idx, row) in enumerate(df.iterrows()):
         image_path = args.images_dir / f"img_{idx:06d}.png"
@@ -231,7 +305,15 @@ def main() -> None:
             print(f"  row {idx}: image missing {image_path}", file=sys.stderr)
             continue
         success, result, runtime_sec, instructions, bytes_allocated, allocations = run_one(
-            args.binary, image_path, row, args.with_memory
+            args.binary,
+            image_path,
+            row,
+            args.with_memory,
+            regression=args.regression,
+            ridge_lambda=args.ridge_lambda,
+            ransac_residual_threshold=args.ransac_residual_threshold,
+            ransac_max_iterations=args.ransac_max_iterations,
+            ransac_min_samples=args.ransac_min_samples,
         )
         df.at[idx, "runtime_sec"] = runtime_sec
         df.at[idx, "instructions"] = pd.NA if instructions is None else instructions
@@ -249,6 +331,9 @@ def main() -> None:
                     df.at[idx, col] = pd.NA
         if (i + 1) % 10 == 0 or (i + 1) == n:
             print(f"  {i + 1}/{n}")
+
+    # Fill true_* / out_* centroid and apparent-radius from metadata and out_pos_*
+    df = fill_pixel_metrics(df)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.output, index=True)

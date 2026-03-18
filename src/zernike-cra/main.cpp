@@ -18,6 +18,7 @@
 #include "common/decimal.hpp"
 #include "common/pipeline/pipelines.hpp"
 #include "common/style.hpp"
+#include "common/spatial/attitude-utils.hpp"
 #include "common/spatial/camera.hpp"
 #include "distance/distance.hpp"
 #include "distance/vectorize.hpp"
@@ -46,6 +47,36 @@ found::Points load_points_from_file(const std::string& path) {
             points.push_back(found::Vec2(DECIMAL(x), DECIMAL(y)));
     }
     return points;
+}
+
+/** Build regression function for distance stage from CLI options. nullptr = use TLS. */
+found::RegressionFunc make_regression(
+    const pipeline::PipelineOptions& opts) {
+    using found::MatXX;
+    using found::OLS;
+    using found::RANSAC;
+    using found::Ridge;
+    using found::TLS;
+    using found::VecX;
+    switch (opts.regression) {
+        case pipeline::RegressionKind::kTls:
+            return nullptr;
+        case pipeline::RegressionKind::kOls:
+            return [](const MatXX& data) { return OLS(data); };
+        case pipeline::RegressionKind::kRidge:
+            return [lambda = opts.ridge_lambda](const MatXX& data) {
+                return Ridge(data, lambda);
+            };
+        case pipeline::RegressionKind::kRansac:
+            return [thr = opts.ransac_residual_threshold,
+                    maxit = opts.ransac_max_iterations,
+                    minsamp = opts.ransac_min_samples](const MatXX& data) {
+                return RANSAC(data, thr, maxit,
+                              static_cast<Eigen::Index>(minsamp));
+            };
+        default:
+            return nullptr;
+    }
 }
 
 }  // namespace
@@ -119,7 +150,8 @@ int main(int argc, char* argv[]) {
             opts.image_width,
             opts.image_height);
         found::SpheroidDistanceDeterminationAlgorithm distance_algo(
-            std::move(cam), principle_axes, orientation.conjugate());
+            std::move(cam), principle_axes, orientation.conjugate(),
+            make_regression(opts));
         found::LOSTVectorGenerationAlgorithm vector_algo(orientation);
         found::SequentialPipeline<found::Points, PositionVector, 2> pipeline;
         pipeline.AddStage(distance_algo).Complete(vector_algo);
@@ -155,7 +187,7 @@ int main(int argc, char* argv[]) {
     found::Camera cam(DECIMAL(opts.focal_length),
                      DECIMAL(opts.pixel_size), width, height);
     found::SpheroidDistanceDeterminationAlgorithm distance_algo(
-        std::move(cam), principle_axes, orientation);
+        std::move(cam), principle_axes, orientation, make_regression(opts));
     found::SequentialPipeline<found::Image, PositionVector, 2> pipeline;
     pipeline.AddStage(edge_algo).Complete(distance_algo);
     PositionVector pos = pipeline.Run(image);
