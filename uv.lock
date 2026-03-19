@@ -385,7 +385,7 @@ wheels = [
 [[package]]
 name = "limb"
 version = "0.0.0"
-source = { git = "https://github.com/UWCubeSat/found-tools.git?rev=satellite-pos-orientation#2c9c93cc0664cab77c968ec79e1a0aea4d88f452" }
+source = { git = "https://github.com/UWCubeSat/found-tools.git?rev=satellite-pos-orientation#6c4efe12726e9f9d0c71870941d81c982329b619" }
 dependencies = [
     { name = "matplotlib" },
     { name = "opencv-python" },

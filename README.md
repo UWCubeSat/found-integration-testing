@@ -102,8 +102,8 @@ ridge_lambda = 1e-5
 ```
 uv run python scripts/distance/simulation.py \
   --simulation-file scripts/distance/simulations.txt \
-  --simulation-name blur-test \
-  --output results/blur-test.csv
+  --simulation-name huge-multi-camera-leo-geo \
+  --output results/huge-multi-cam.csv
 ```
 
 debug
