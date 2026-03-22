@@ -34,6 +34,22 @@ QUATERNION_NOISE_SIGMA_RAD_DEFAULT = (1.0 / 3.0) * (np.pi / (180.0 * 3600.0))
 # Section header in simulations.txt: [name]
 SIMULATION_SECTION_RE = re.compile(r"^\[\s*([^\]]+)\s*\]$")
 
+# Distance-stage regression kinds (must match pipeline_runner --regression).
+REGRESSION_KINDS = ("tls", "ols", "ridge", "ransac")
+
+
+def _parse_regression_list(s: str) -> list[str]:
+    """Parse space-separated regression names; validate against REGRESSION_KINDS."""
+    names = [x.strip().lower() for x in s.split() if x.strip()]
+    if not names:
+        raise ValueError("regression must list at least one of: " + ", ".join(REGRESSION_KINDS))
+    bad = [n for n in names if n not in REGRESSION_KINDS]
+    if bad:
+        raise ValueError(
+            f"unknown regression kind(s): {bad!r}; use " + " | ".join(REGRESSION_KINDS)
+        )
+    return names
+
 
 def _load_simulation_config(file_path: Path, simulation_name: str) -> dict[str, str]:
     """Parse simulations.txt; return key=value dict for the given [simulation_name] section."""
@@ -83,7 +99,7 @@ def _apply_simulation_config(args: argparse.Namespace, config: dict[str, str]) -
         "false_points": lambda v: setattr(args, "n_false_points", int(v)),
         "conjugate_quaternion": lambda v: setattr(args, "conjugate_quaternion", truth(v)),
         "edge_decimals": lambda v: setattr(args, "edge_decimals", int(v)),
-        "regression": lambda v: setattr(args, "regression", v.strip().lower()),
+        "regression": lambda v: setattr(args, "regression", _parse_regression_list(v)),
         "ridge_lambda": lambda v: setattr(args, "ridge_lambda", float(v)),
         "ransac_residual_threshold": lambda v: setattr(args, "ransac_residual_threshold", float(v)),
         "ransac_max_iterations": lambda v: setattr(args, "ransac_max_iterations", int(v)),
@@ -314,12 +330,24 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Decimal places for edge point coords (0 = truncate to integer pixels). Default: 0.",
     )
+    def _cli_regression(s: str) -> str:
+        t = s.strip().lower()
+        if t not in REGRESSION_KINDS:
+            raise argparse.ArgumentTypeError(
+                f"unknown regression {s!r}; use " + " | ".join(REGRESSION_KINDS)
+            )
+        return t
+
     p.add_argument(
         "--regression",
-        type=str,
-        default="tls",
-        choices=("tls", "ols", "ridge", "ransac"),
-        help="Distance-stage regression (default: tls).",
+        nargs="+",
+        type=_cli_regression,
+        default=["tls"],
+        metavar="ALG",
+        help=(
+            "Distance-stage regression: one or more of tls, ols, ridge, ransac "
+            "(default: tls). Multiple values duplicate the grid and set column distance_regression."
+        ),
     )
     p.add_argument(
         "--ridge-lambda",
@@ -413,8 +441,23 @@ def main() -> None:
         df_simulation["atmosphere_blur"] = float("nan")
     df_simulation["atmosphere_blur"] = args.atmosphere_blur
 
+    regressions: list[str] = list(args.regression)
+    if len(regressions) > 1:
+        expanded = []
+        for reg in regressions:
+            d = df_simulation.copy()
+            d["distance_regression"] = reg
+            expanded.append(d)
+        df_simulation = pd.concat(expanded, ignore_index=True)
+    else:
+        df_simulation = df_simulation.copy()
+        df_simulation["distance_regression"] = regressions[0]
+
     n = len(df_simulation)
-    print(f"cra_analysis: running distance pipeline on {n} rows (binary={args.binary})")
+    print(
+        f"cra_analysis: running distance pipeline on {n} rows "
+        f"(binary={args.binary}, regression={regressions})"
+    )
 
     rng = np.random.default_rng(args.seed)
     for col in ("noisy_qw", "noisy_qx", "noisy_qy", "noisy_qz"):
@@ -457,7 +500,7 @@ def main() -> None:
             row,
             points,
             edge_decimals=args.edge_decimals,
-            regression=args.regression,
+            regression=str(row["distance_regression"]),
             ridge_lambda=args.ridge_lambda,
             ransac_residual_threshold=args.ransac_residual_threshold,
             ransac_max_iterations=args.ransac_max_iterations,

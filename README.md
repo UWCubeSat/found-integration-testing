@@ -127,3 +127,10 @@ uv run python scripts/csv_to_images.py \
   --matplotlib
 ```
 
+comprehensive
+```
+uv run python scripts/comprehensive/simulation.py \
+  --simulation-file scripts/comprehensive/simulations.txt \
+  --simulation-name baseline-small \
+  --output results/comprehensive/baseline.csv
+```
