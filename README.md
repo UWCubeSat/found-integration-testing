@@ -109,6 +109,21 @@ uv run python scripts/distance/simulation.py \
 debug
 
 ```
-uv run scripts/debug_trouble_rows.py 11 --csv results/distance_multi-camera-leo-geo.csv --edge-decimals 1 --out-dir output
+uv run scripts/debug_trouble_rows.py 11 --csv results/huge-mulit-cam-angle-noise.csv --edge-decimals 1 --out-dir output
+```
+
+image
+
+```
+uv run python scripts/csv_to_images.py \
+  --csv results/multi-cam-image.csv \
+  --output results/plots/multi-cam/pngs \
+  --max-rows 200
+
+uv run python scripts/csv_to_images.py \
+  --csv results/multi-cam.csv \
+  --output results/plots/multi-cam/edges_only \
+  --rows 0 42 100 \
+  --matplotlib
 ```
 

@@ -27,6 +27,10 @@ POSITION_LINE_RE = re.compile(
     r"POSITION\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)"
 )
 
+# Per-axis Gaussian σ (radians) for quaternion rotation-vector noise when 3σ = 1 arcsecond:
+# σ = (1/3) × (1/3600)° × (π/180).
+QUATERNION_NOISE_SIGMA_RAD_DEFAULT = (1.0 / 3.0) * (np.pi / (180.0 * 3600.0))
+
 # Section header in simulations.txt: [name]
 SIMULATION_SECTION_RE = re.compile(r"^\[\s*([^\]]+)\s*\]$")
 
@@ -84,10 +88,40 @@ def _apply_simulation_config(args: argparse.Namespace, config: dict[str, str]) -
         "ransac_residual_threshold": lambda v: setattr(args, "ransac_residual_threshold", float(v)),
         "ransac_max_iterations": lambda v: setattr(args, "ransac_max_iterations", int(v)),
         "ransac_min_samples": lambda v: setattr(args, "ransac_min_samples", int(v)),
+        "quaternion_noise_sigma_rad": lambda v: setattr(
+            args, "quaternion_noise_sigma_rad", float(v)
+        ),
     }
     for key, val in config.items():
         if key in key_handlers:
             key_handlers[key](val)
+
+
+def perturb_quaternion_wxyz(
+    qw: float,
+    qx: float,
+    qy: float,
+    qz: float,
+    sigma_rad: float,
+    rng: np.random.Generator,
+) -> tuple[float, float, float, float]:
+    """
+    Apply small isotropic attitude noise: rotation vector θ with θ_i ~ N(0, σ²),
+    composed with the body quaternion (SciPy xyzw internally; returns w,x,y,z).
+    """
+    if sigma_rad <= 0.0:
+        return (qw, qx, qy, qz)
+    q_xyzw = np.array([qx, qy, qz, qw], dtype=np.float64)
+    n = np.linalg.norm(q_xyzw)
+    if n <= 0.0:
+        return (qw, qx, qy, qz)
+    q_xyzw /= n
+    theta = rng.normal(0.0, sigma_rad, size=3)
+    r_orig = R.from_quat(q_xyzw)
+    r_delta = R.from_rotvec(theta)
+    qn = (r_orig * r_delta).as_quat()
+    qx2, qy2, qz2, qw2 = float(qn[0]), float(qn[1]), float(qn[2]), float(qn[3])
+    return (qw2, qx2, qy2, qz2)
 
 
 def _parse_position_stdout(stdout: str) -> dict:
@@ -115,6 +149,7 @@ def _build_distance_cmd(
     ransac_max_iterations: int = 100,
     ransac_min_samples: int = 0,
     conjugate_quaternion: bool = False,
+    quaternion_wxyz: tuple[float, float, float, float] | None = None,
 ) -> list[str]:
     """Build argv for --pipeline distance (edges file + camera/axes/quat + regression)."""
     w = int(row["cam_x_resolution"])
@@ -138,9 +173,13 @@ def _build_distance_cmd(
         ]
         if ransac_min_samples > 0:
             cmd += ["--ransac-min-samples", str(ransac_min_samples)]
-    qw, qx, qy, qz = row.get("qw"), row.get("qx"), row.get("qy"), row.get("qz")
-    if pd.notna(qw) and pd.notna(qx) and pd.notna(qy) and pd.notna(qz):
+    if quaternion_wxyz is not None:
+        qw, qx, qy, qz = quaternion_wxyz
         cmd += ["--quaternion", str(float(qw)), str(float(qx)), str(float(qy)), str(float(qz))]
+    else:
+        qw, qx, qy, qz = row.get("qw"), row.get("qx"), row.get("qy"), row.get("qz")
+        if pd.notna(qw) and pd.notna(qx) and pd.notna(qy) and pd.notna(qz):
+            cmd += ["--quaternion", str(float(qw)), str(float(qx)), str(float(qy)), str(float(qz))]
     a, b, c = row.get("shape_axis_a"), row.get("shape_axis_b"), row.get("shape_axis_c")
     if pd.notna(a) and pd.notna(b) and pd.notna(c):
         cmd += ["--principle-axes", str(float(a)), str(float(b)), str(float(c))]
@@ -158,6 +197,7 @@ def run_distance_pipeline(
     ransac_residual_threshold: float = 1e-4,
     ransac_max_iterations: int = 100,
     ransac_min_samples: int = 0,
+    quaternion_wxyz: tuple[float, float, float, float] | None = None,
 ) -> tuple[bool, dict]:
     """Write edge points to a temp file, run distance pipeline, return (success, result_dict)."""
     if points_xy.shape[0] < 3:
@@ -183,6 +223,7 @@ def run_distance_pipeline(
             ransac_residual_threshold=ransac_residual_threshold,
             ransac_max_iterations=ransac_max_iterations,
             ransac_min_samples=ransac_min_samples,
+            quaternion_wxyz=quaternion_wxyz,
         )
         proc = subprocess.run(
             cmd,
@@ -310,6 +351,17 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=None, help="Random seed for point noise.")
     p.add_argument(
+        "--quaternion-noise-sigma-rad",
+        type=float,
+        default=QUATERNION_NOISE_SIGMA_RAD_DEFAULT,
+        metavar="σ",
+        help=(
+            "Per-axis Gaussian σ (radians) for rotation-vector quaternion noise "
+            f"(default: {QUATERNION_NOISE_SIGMA_RAD_DEFAULT:.6e}, i.e. 3σ = 1 arcsec per axis). "
+            "Use 0 to disable."
+        ),
+    )
+    p.add_argument(
         "--simulation-file",
         type=Path,
         default=None,
@@ -364,7 +416,31 @@ def main() -> None:
     n = len(df_simulation)
     print(f"cra_analysis: running distance pipeline on {n} rows (binary={args.binary})")
 
+    rng = np.random.default_rng(args.seed)
+    for col in ("noisy_qw", "noisy_qx", "noisy_qy", "noisy_qz"):
+        df_simulation[col] = np.nan
+
     for idx, row in df_simulation.iterrows():
+        qw, qx, qy, qz = row.get("qw"), row.get("qx"), row.get("qy"), row.get("qz")
+        quat_ok = (
+            pd.notna(qw) and pd.notna(qx) and pd.notna(qy) and pd.notna(qz)
+        )
+        quaternion_wxyz: tuple[float, float, float, float] | None = None
+        if quat_ok:
+            nqw, nqx, nqy, nqz = perturb_quaternion_wxyz(
+                float(qw),
+                float(qx),
+                float(qy),
+                float(qz),
+                float(args.quaternion_noise_sigma_rad),
+                rng,
+            )
+            df_simulation.at[idx, "noisy_qw"] = nqw
+            df_simulation.at[idx, "noisy_qx"] = nqx
+            df_simulation.at[idx, "noisy_qy"] = nqy
+            df_simulation.at[idx, "noisy_qz"] = nqz
+            quaternion_wxyz = (nqw, nqx, nqy, nqz)
+
         # Points from row (ideal limb edge); optionally add Gaussian noise + false points
         points = np.asarray(
             points_from_row(
@@ -386,6 +462,7 @@ def main() -> None:
             ransac_residual_threshold=args.ransac_residual_threshold,
             ransac_max_iterations=args.ransac_max_iterations,
             ransac_min_samples=args.ransac_min_samples,
+            quaternion_wxyz=quaternion_wxyz,
         )
         if success:
             df_simulation.at[idx, "out_pos_x"] = result["out_pos_x"]
