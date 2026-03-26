@@ -189,6 +189,8 @@ def _build_distance_cmd(
         ]
         if ransac_min_samples > 0:
             cmd += ["--ransac-min-samples", str(ransac_min_samples)]
+    # --quaternion w x y z (real, i, j, k). Binary conjugates internally for distance only
+    # (see src/zernike-cra/main.cpp); pass the same noisy tuple comprehensive uses for full.
     if quaternion_wxyz is not None:
         qw, qx, qy, qz = quaternion_wxyz
         cmd += ["--quaternion", str(float(qw)), str(float(qx)), str(float(qy)), str(float(qz))]

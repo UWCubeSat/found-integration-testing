@@ -8,9 +8,12 @@ position output), and save results CSV plus all rendered images.
 from __future__ import annotations
 
 import argparse
+import json
 import re
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -32,6 +35,11 @@ POSITION_LINE_RE = re.compile(
 QUATERNION_NOISE_SIGMA_RAD_DEFAULT = (1.0 / 3.0) * (np.pi / (180.0 * 3600.0))
 
 SIMULATION_SECTION_RE = re.compile(r"^\[\s*([^\]]+)\s*\]$")
+
+# limb.simulation.render.conic.process_simulation / _apply_noise_pipeline
+RENDER_NOISE_TOP_KEYS = frozenset(
+    {"gaussian", "stars", "discretization", "motion_blur", "dead_pixels"}
+)
 
 
 def _load_simulation_config(file_path: Path, simulation_name: str) -> dict[str, str]:
@@ -67,6 +75,12 @@ def _apply_simulation_config(args: argparse.Namespace, config: dict[str, str]) -
             raise ValueError(f"semi_axes must have 3 values, got {len(a)}")
         return (a[0], a[1], a[2])
 
+    def pair2f(s: str) -> tuple[float, float]:
+        a = flist(s)
+        if len(a) != 2:
+            raise ValueError(f"expected two floats, got {len(a)}")
+        return (a[0], a[1])
+
     key_handlers: dict[str, Callable[[str], None]] = {
         "semi_axes": lambda v: setattr(args, "semi_axes", f3(v)),
         "fovs": lambda v: setattr(args, "fovs", flist(v)),
@@ -91,6 +105,19 @@ def _apply_simulation_config(args: argparse.Namespace, config: dict[str, str]) -
         "window_size": lambda v: setattr(args, "window_size", int(v)),
         "transition_width": lambda v: setattr(args, "transition_width", float(v)),
     }
+    truth = lambda s: s.strip().lower() in ("1", "true", "yes")
+    key_handlers.update(
+        {
+            "time_pipeline": lambda v: setattr(args, "time_pipeline", truth(v)),
+            "valgrind": lambda v: setattr(args, "valgrind", truth(v)),
+            "noise_gaussian": lambda v: setattr(args, "noise_gaussian", pair2f(v)),
+            "noise_stars": lambda v: setattr(args, "noise_stars", float(v)),
+            "noise_dead_pixels": lambda v: setattr(args, "noise_dead_pixels", pair2f(v)),
+            "noise_discretization": lambda v: setattr(args, "noise_discretization", int(v)),
+            "noise_motion_blur": lambda v: setattr(args, "noise_motion_blur", int(v)),
+            "noise_config_json": lambda v: setattr(args, "noise_config_json", Path(v.strip())),
+        }
+    )
     for key, val in config.items():
         if key in key_handlers:
             key_handlers[key](val)
@@ -104,6 +131,10 @@ def perturb_quaternion_wxyz(
     sigma_rad: float,
     rng: np.random.Generator,
 ) -> tuple[float, float, float, float]:
+    """
+    Same as scripts/distance/simulation.py: small attitude noise via rotation vector
+    θ_i ~ N(0, σ²), composed with body quaternion (SciPy xyzw internally; returns w,x,y,z).
+    """
     if sigma_rad <= 0.0:
         return (qw, qx, qy, qz)
     q_xyzw = np.array([qx, qy, qz, qw], dtype=np.float64)
@@ -132,44 +163,56 @@ def _parse_position_stdout(stdout: str) -> dict:
     return {"success": False}
 
 
-def _noise_config_from_args(args: argparse.Namespace) -> dict | None:
-    """Build noise_config dict like limb.simulation.main.main (optional render post-process)."""
-    if not any(
-        (
-            getattr(args, "noise_gaussian", None) is not None,
-            getattr(args, "noise_stars", None) is not None,
-            getattr(args, "noise_dead_pixels", None) is not None,
-            getattr(args, "noise_discretization", None) is not None,
-            getattr(args, "noise_motion_blur", None) is not None,
-        )
-    ):
-        return None
-    noise_config: dict = {}
-    if args.noise_gaussian is not None:
-        noise_config["gaussian"] = {
-            "mean": args.noise_gaussian[0],
-            "sigma": args.noise_gaussian[1],
+def build_render_noise_config(args: argparse.Namespace) -> dict | None:
+    """Build ``noise_config`` for ``limb.simulation.render.conic.process_simulation``.
+
+    Order in the renderer: gaussian → stars → discretization → motion_blur → dead_pixels.
+
+    If ``--noise-config-json`` is set, that object is loaded first; any CLI or
+    ``simulations.txt`` noise_* settings then override the matching top-level keys.
+    """
+    cfg: dict[str, dict] = {}
+    jp = getattr(args, "noise_config_json", None)
+    if jp is not None:
+        path = Path(jp)
+        if not path.is_file():
+            raise FileNotFoundError(f"noise config JSON not found: {path}")
+        with open(path, encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, dict):
+            raise ValueError("noise config JSON must be a JSON object at the root")
+        for k, v in loaded.items():
+            if k not in RENDER_NOISE_TOP_KEYS:
+                raise ValueError(
+                    f"unknown render noise key {k!r}; allowed: {sorted(RENDER_NOISE_TOP_KEYS)}"
+                )
+            if not isinstance(v, dict):
+                raise ValueError(f"render noise {k!r} must be a JSON object")
+            cfg[k] = dict(v)
+    if getattr(args, "noise_gaussian", None) is not None:
+        ng = args.noise_gaussian
+        cfg["gaussian"] = {"mean": float(ng[0]), "sigma": float(ng[1])}
+    if getattr(args, "noise_stars", None) is not None:
+        cfg["stars"] = {"prob": float(args.noise_stars)}
+    if getattr(args, "noise_dead_pixels", None) is not None:
+        dp = args.noise_dead_pixels
+        cfg["dead_pixels"] = {
+            "salt_prob": float(dp[0]),
+            "pepper_prob": float(dp[1]),
         }
-    if args.noise_stars is not None:
-        noise_config["stars"] = {"prob": args.noise_stars}
-    if args.noise_dead_pixels is not None:
-        noise_config["dead_pixels"] = {
-            "salt_prob": args.noise_dead_pixels[0],
-            "pepper_prob": args.noise_dead_pixels[1],
-        }
-    if args.noise_discretization is not None:
-        noise_config["discretization"] = {"levels": args.noise_discretization}
-    if args.noise_motion_blur is not None:
-        noise_config["motion_blur"] = {"kernel_size": args.noise_motion_blur}
-    return noise_config
+    if getattr(args, "noise_discretization", None) is not None:
+        cfg["discretization"] = {"levels": int(args.noise_discretization)}
+    if getattr(args, "noise_motion_blur", None) is not None:
+        cfg["motion_blur"] = {"kernel_size": int(args.noise_motion_blur)}
+    return cfg if cfg else None
 
 
 def _validate_render_options(args: argparse.Namespace) -> None:
     """Subset of limb.simulation.main._validate_args for batch render."""
     if args.render_batch_size < 1:
         raise ValueError("--render-batch-size must be >= 1.")
-    if args.render_sigma <= 0:
-        raise ValueError("--render-sigma must be > 0 (render uses Gaussian edge blur).")
+    if args.render_sigma < 0:
+        raise ValueError("--render-sigma must be >= 0.")
     if getattr(args, "noise_stars", None) is not None and (
         args.noise_stars < 0 or args.noise_stars > 1
     ):
@@ -219,6 +262,29 @@ def image_path_for_row_index(images_dir: Path, idx: int) -> Path:
     return images_dir / f"img_{int(idx):06d}.png"
 
 
+def _append_quaternion_cli_args(
+    cmd: list[str],
+    row: pd.Series,
+    quaternion_wxyz: tuple[float, float, float, float] | None,
+) -> None:
+    """Mirror scripts/distance/simulation._build_distance_cmd quaternion handling.
+
+    Passes ``--quaternion w x y z`` (real, i, j, k). The binary uses this quaternion
+    differently by mode: ``--pipeline distance`` conjugates internally for the
+    distance stage; ``--pipeline full`` uses it without that conjugation
+    (see src/zernike-cra/main.cpp). This script runs ``full``, so the rendered
+    image (true attitude from row qw,qx,qy,qz) is paired with the noisy quaternion
+    passed here — same tuple layout as the distance simulation would pass.
+    """
+    if quaternion_wxyz is not None:
+        qw, qx, qy, qz = quaternion_wxyz
+        cmd += ["--quaternion", str(float(qw)), str(float(qx)), str(float(qy)), str(float(qz))]
+        return
+    qw, qx, qy, qz = row.get("qw"), row.get("qx"), row.get("qy"), row.get("qz")
+    if pd.notna(qw) and pd.notna(qx) and pd.notna(qy) and pd.notna(qz):
+        cmd += ["--quaternion", str(float(qw)), str(float(qx)), str(float(qy)), str(float(qz))]
+
+
 def _build_full_pipeline_cmd(
     binary: Path,
     image_path: Path,
@@ -264,13 +330,7 @@ def _build_full_pipeline_cmd(
         ]
         if ransac_min_samples > 0:
             cmd += ["--ransac-min-samples", str(ransac_min_samples)]
-    if quaternion_wxyz is not None:
-        qw, qx, qy, qz = quaternion_wxyz
-        cmd += ["--quaternion", str(float(qw)), str(float(qx)), str(float(qy)), str(float(qz))]
-    else:
-        qw, qx, qy, qz = row.get("qw"), row.get("qx"), row.get("qy"), row.get("qz")
-        if pd.notna(qw) and pd.notna(qx) and pd.notna(qy) and pd.notna(qz):
-            cmd += ["--quaternion", str(float(qw)), str(float(qx)), str(float(qy)), str(float(qz))]
+    _append_quaternion_cli_args(cmd, row, quaternion_wxyz)
     a, b, c = row.get("shape_axis_a"), row.get("shape_axis_b"), row.get("shape_axis_c")
     if pd.notna(a) and pd.notna(b) and pd.notna(c):
         cmd += ["--principle-axes", str(float(a)), str(float(b)), str(float(c))]
@@ -334,6 +394,14 @@ def fill_pixel_metrics_lenient(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+DEFAULT_VALGRIND_PREFIX = [
+    "valgrind",
+    "--error-exitcode=1",
+    "--leak-check=full",
+    "--errors-for-leak-kinds=definite,possible",
+]
+
+
 def run_full_pipeline(
     binary: Path,
     image_path: Path,
@@ -349,7 +417,10 @@ def run_full_pipeline(
     transition_width: float = 1.66,
     quaternion_wxyz: tuple[float, float, float, float] | None = None,
     timeout_s: int = 120,
-) -> tuple[bool, dict, int]:
+    time_pipeline: bool = False,
+    valgrind: bool = False,
+    valgrind_prefix: list[str] | None = None,
+) -> tuple[bool, dict, int, float | None]:
     cmd = _build_full_pipeline_cmd(
         binary,
         image_path,
@@ -364,11 +435,21 @@ def run_full_pipeline(
         transition_width=transition_width,
         quaternion_wxyz=quaternion_wxyz,
     )
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    if valgrind:
+        prefix = list(valgrind_prefix) if valgrind_prefix is not None else list(DEFAULT_VALGRIND_PREFIX)
+        cmd = prefix + cmd
+    elapsed: float | None = None
+    t0 = time.perf_counter()
+    proc: subprocess.CompletedProcess[str]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    finally:
+        if time_pipeline:
+            elapsed = time.perf_counter() - t0
     out = (proc.stdout or "") + "\n" + (proc.stderr or "")
     result = _parse_position_stdout(out)
     ok = result.get("success", False) and proc.returncode == 0
-    return ok, result, proc.returncode
+    return ok, result, proc.returncode, elapsed
 
 
 def parse_args() -> argparse.Namespace:
@@ -412,7 +493,7 @@ def parse_args() -> argparse.Namespace:
         "--render-sigma",
         type=float,
         default=0.5,
-        help="Gaussian edge blur σ (pixels) passed to limb render.process_simulation (> 0).",
+        help="Gaussian edge blur σ (pixels) for limb render; 0 is allowed (sharp edge, per found-tools).",
     )
     p.add_argument(
         "--render-batch-size",
@@ -458,6 +539,24 @@ def parse_args() -> argparse.Namespace:
         help="Horizontal motion blur kernel size (odd, >= 1).",
     )
     p.add_argument(
+        "--noise-salt-pepper",
+        nargs=2,
+        type=float,
+        metavar=("SALT", "PEPPER"),
+        dest="noise_dead_pixels",
+        help="Alias for --noise-dead-pixels (matches limb.simulation.main).",
+    )
+    p.add_argument(
+        "--noise-config-json",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "JSON object passed to render noise_config (keys: gaussian, stars, discretization, "
+            "motion_blur, dead_pixels). CLI/file noise_* flags override those keys when set."
+        ),
+    )
+    p.add_argument(
         "--gray-threshold",
         type=int,
         default=10,
@@ -493,6 +592,33 @@ def parse_args() -> argparse.Namespace:
         help="Subprocess timeout (seconds) per row for pipeline_runner.",
     )
     p.add_argument(
+        "--time-pipeline",
+        action="store_true",
+        help="Record wall time per pipeline invocation in runtime_sec (perf_counter).",
+    )
+    p.add_argument(
+        "--valgrind",
+        action="store_true",
+        help=(
+            "Run pipeline_runner under valgrind (memcheck). Implies much longer runs; "
+            "timeout is scaled automatically unless you set --pipeline-timeout high enough."
+        ),
+    )
+    p.add_argument(
+        "--valgrind-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="Extra valgrind argv after defaults (repeat for multiple args).",
+    )
+    p.add_argument(
+        "--valgrind-timeout-factor",
+        type=int,
+        default=25,
+        metavar="N",
+        help="Multiply --pipeline-timeout by N when --valgrind is set (default: 25).",
+    )
+    p.add_argument(
         "--edge-decimals",
         type=int,
         default=0,
@@ -520,6 +646,10 @@ def main() -> None:
 
     if not args.binary.is_file():
         print(f"comprehensive: binary not found: {args.binary}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.valgrind and shutil.which("valgrind") is None:
+        print("comprehensive: --valgrind requires valgrind on PATH", file=sys.stderr)
         sys.exit(1)
 
     try:
@@ -566,8 +696,25 @@ def main() -> None:
         df_simulation[col] = np.nan
     df_simulation["rendered_image"] = ""
     df_simulation["pipeline_returncode"] = np.nan
+    if "runtime_sec" not in df_simulation.columns:
+        df_simulation["runtime_sec"] = np.nan
     for col in ("out_pos_x", "out_pos_y", "out_pos_z"):
         df_simulation[col] = np.nan
+
+    valgrind_prefix: list[str] | None = None
+    if args.valgrind:
+        valgrind_prefix = list(DEFAULT_VALGRIND_PREFIX)
+        if args.valgrind_arg:
+            valgrind_prefix.extend(args.valgrind_arg)
+
+    pipeline_timeout = args.pipeline_timeout
+    if args.valgrind:
+        pipeline_timeout = max(1, int(args.pipeline_timeout * args.valgrind_timeout_factor))
+        print(
+            f"comprehensive: valgrind enabled → pipeline timeout {pipeline_timeout}s "
+            f"({args.valgrind_timeout_factor}× {args.pipeline_timeout}s)",
+            file=sys.stderr,
+        )
 
     pipeline_quat: dict[int, tuple[float, float, float, float] | None] = {}
     for idx, row in df_simulation.iterrows():
@@ -592,7 +739,11 @@ def main() -> None:
 
     if args.seed is not None:
         np.random.seed(args.seed)
-    noise_config = _noise_config_from_args(args)
+    try:
+        noise_config = build_render_noise_config(args)
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        print(f"comprehensive: render noise config: {e}", file=sys.stderr)
+        sys.exit(1)
     render_limb_images_like_simulation_main(
         df_simulation,
         images_dir,
@@ -612,7 +763,7 @@ def main() -> None:
             pass
         df_simulation.at[idx, "rendered_image"] = str(rel)
 
-        success, result, rc = run_full_pipeline(
+        success, result, rc, elapsed = run_full_pipeline(
             args.binary,
             img_path,
             row,
@@ -625,9 +776,14 @@ def main() -> None:
             window_size=args.window_size,
             transition_width=args.transition_width,
             quaternion_wxyz=pipeline_quat[int(idx)],
-            timeout_s=args.pipeline_timeout,
+            timeout_s=pipeline_timeout,
+            time_pipeline=args.time_pipeline,
+            valgrind=args.valgrind,
+            valgrind_prefix=valgrind_prefix,
         )
         df_simulation.at[idx, "pipeline_returncode"] = int(rc)
+        if args.time_pipeline and elapsed is not None:
+            df_simulation.at[idx, "runtime_sec"] = float(elapsed)
         if success:
             df_simulation.at[idx, "out_pos_x"] = result["out_pos_x"]
             df_simulation.at[idx, "out_pos_y"] = result["out_pos_y"]

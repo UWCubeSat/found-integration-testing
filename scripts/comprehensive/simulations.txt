@@ -1,0 +1,89 @@
+# Simulation configs for scripts/comprehensive/simulation.py
+#
+# Each [name] section is key = value (space-separated lists for multi-value keys).
+# Grid keys (same idea as scripts/distance/simulation.py):
+#   semi_axes, fovs, resolutions, distances,
+#   num_earth_points, num_positions_per_point, num_spins_per_position, num_radials_per_spin
+#
+# Quaternion noise (applied before full pipeline; noisy quat passed to pipeline_runner):
+#   quaternion_noise_sigma_rad = <float>   (0 = off; default in CLI matches distance script)
+#
+# Distance-stage regression:
+#   regression = tls | ols | ridge | ransac
+#   ridge_lambda, ransac_residual_threshold, ransac_max_iterations, ransac_min_samples
+#
+# Render (same batch path as limb.simulation.main: _calculate_conic_coeffs + process_simulation):
+#   render_sigma = <float>       edge blur in pixels (>= 0; 0 = sharp edge; default CLI: 0.5)
+#   render_batch_size = <int>    batch size per resolution group (default CLI: 500)
+#
+# Post-render sensor noise (limb.simulation.render.conic._apply_noise_pipeline), applied in order:
+#   noise_gaussian = <mean> <sigma>     additive Gaussian in pixel units (default sigma in limb: 10)
+#   noise_stars = <prob>               salt (white) fraction [0,1], pepper 0
+#   noise_discretization = <levels>    quantize to LEVELS levels per channel (>= 1)
+#   noise_motion_blur = <kernel>       horizontal motion blur, odd kernel >= 1
+#   noise_dead_pixels = <salt> <pepper> salt-and-pepper probabilities (last in pipeline)
+#   noise_config_json = <path>         JSON object; keys gaussian | stars | discretization |
+#                                      motion_blur | dead_pixels → nested objects (see limb doc).
+#                                      Any noise_* lines above override that key when both set.
+#
+# Edge detection (Zernike + Sobel stage in full pipeline):
+#   gray_threshold = <0-255>  Sobel high threshold (default 10)
+#   window_size = <int>      Zernike window (default 7)
+#   transition_width = <float> (default 1.66)
+#
+# Outputs: --output CSV and --images-dir (default <output_stem>_images) with img_<index>.png per row.
+#
+# Quaternion: same --quaternion w x y z as distance simulation (noisy_* columns). pipeline_runner
+#   uses it without extra conjugation for --pipeline full (distance mode conjugates inside the binary).
+#
+# Profiling / tooling (CLI or boolean in section):
+#   time_pipeline = true   → per-row runtime_sec (wall clock, perf_counter)
+#   valgrind = true        → run each row under valgrind (requires valgrind on PATH; scale timeout)
+
+[baseline-small]
+semi_axes = 6378137.0 6378137.0 6356752.31424518
+fovs = 85
+resolutions = 2048
+distances = 9e6
+num_earth_points = 1
+num_positions_per_point = 2
+num_spins_per_position = 2
+num_radials_per_spin = 2
+quaternion_noise_sigma_rad = 0
+render_sigma = 0.5
+gray_threshold = 200
+window_size = 7
+transition_width = 1.66
+regression = tls
+
+[multi-cam-smoke]
+semi_axes = 6378137.0 6378137.0 6356752.31424518
+fovs = 10.0 40.0
+resolutions = 512
+distances = 7e6 15e6
+num_earth_points = 2
+num_positions_per_point = 2
+num_spins_per_position = 2
+num_radials_per_spin = 2
+quaternion_noise_sigma_rad = 1.615e-9
+render_sigma = 0.5
+regression = tls
+
+[render-noise-example]
+# Example only: small grid + mild post-render noise (tune for your study).
+semi_axes = 6378137.0 6378137.0 6356752.31424518
+fovs = 10.0
+resolutions = 256
+distances = 7e6
+num_earth_points = 1
+num_positions_per_point = 1
+num_spins_per_position = 1
+num_radials_per_spin = 1
+quaternion_noise_sigma_rad = 0
+render_sigma = 0.5
+noise_gaussian = 0 8
+noise_stars = 0.002
+noise_discretization = 16
+noise_motion_blur = 5
+noise_dead_pixels = 0.001 0.000
+regression = ransac

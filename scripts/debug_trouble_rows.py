@@ -3,11 +3,17 @@
 Debug specified rows of the CRA results CSV: re-run the distance pipeline
 for those rows, print inputs vs outputs, and optionally save edge files,
 render limb images, and output the pixel conic and edge points.
+
+When a limb image is rendered under --out-dir, the edge-only pipeline
+(``pipeline_runner --pipeline edge``) is run on that image; detected
+subpixel edge points are saved and overlaid in the edge plot, with
+simulated limb points as an optional reference curve.
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,6 +27,10 @@ _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 from scripts.distance.simulation import _build_distance_cmd, _parse_position_stdout
+
+EDGE_POINT_LINE_RE = re.compile(
+    r"^\s*([-\d.eE+]+)\s+([-\d.eE+]+)\s*(?:#.*)?$"
+)
 from limb.simulation.edge.conic import _conic_matrix_to_coeffs
 from limb.simulation.metadata.orchestrate import (
     _conic_from_row,
@@ -70,6 +80,51 @@ def run_one_with_verbose(
     finally:
         if delete_after:
             path.unlink(missing_ok=True)
+
+
+def _parse_edge_pipeline_stdout(stdout: str) -> np.ndarray:
+    """Parse ``x y`` lines from ``--pipeline edge`` stdout into (N, 2) float64."""
+    rows: list[tuple[float, float]] = []
+    for line in (stdout or "").splitlines():
+        m = EDGE_POINT_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        try:
+            rows.append((float(m.group(1)), float(m.group(2))))
+        except ValueError:
+            continue
+    if not rows:
+        return np.zeros((0, 2), dtype=np.float64)
+    return np.asarray(rows, dtype=np.float64)
+
+
+def run_edge_pipeline(
+    binary: Path,
+    image_path: Path,
+    *,
+    gray_threshold: int = 10,
+    window_size: int = 7,
+    transition_width: float = 1.66,
+    timeout_s: int = 120,
+) -> tuple[np.ndarray, str, int]:
+    """Run Zernike+Sobel edge detection on ``image_path``; return (points_xy, combined_output, returncode)."""
+    cmd = [
+        str(binary),
+        "--pipeline",
+        "edge",
+        "--image",
+        str(image_path),
+        "--gray-threshold",
+        str(int(gray_threshold)),
+        "--window-size",
+        str(int(window_size)),
+        "--transition-width",
+        str(float(transition_width)),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    pts = _parse_edge_pipeline_stdout(proc.stdout or "")
+    return pts, out, int(proc.returncode)
 
 
 def position_error_m(row: pd.Series) -> float:
@@ -193,6 +248,34 @@ def parse_args() -> argparse.Namespace:
         help="Decimal places for edge coordinates (0 = integer pixels). Default: 0.",
     )
     p.add_argument(
+        "--edge-gray-threshold",
+        type=int,
+        default=10,
+        metavar="T",
+        help="Sobel high threshold 0–255 for --pipeline edge on the rendered image (default: 10).",
+    )
+    p.add_argument(
+        "--edge-window-size",
+        type=int,
+        default=7,
+        metavar="N",
+        help="Zernike window size for --pipeline edge (default: 7).",
+    )
+    p.add_argument(
+        "--edge-transition-width",
+        type=float,
+        default=1.66,
+        metavar="W",
+        help="Zernike transition width for --pipeline edge (default: 1.66).",
+    )
+    p.add_argument(
+        "--edge-pipeline-timeout",
+        type=int,
+        default=120,
+        metavar="SEC",
+        help="Timeout seconds for --pipeline edge subprocess (default: 120).",
+    )
+    p.add_argument(
         "--quiet",
         action="store_true",
         help="Only print one-line summary per row; do not print full pipeline output.",
@@ -311,35 +394,89 @@ def main() -> None:
                 print(f"  Edge points (px):        {[(float(p[0]), float(p[1])) for p in points]}")
             else:
                 print(f"  Edge points (first {head}): {[(float(p[0]), float(p[1])) for p in points[:head]]} ... {len(points)} total (see {edges_path})")
-            # Rendered limb image
+            # Rendered limb image + edge-only pipeline for subpixel overlay plot
             img_path = None
+            edge_section = ""
             if not args.no_render:
                 img_path = render_limb_image(
                     row, args.out_dir, idx, sigma=args.render_sigma
                 )
                 if img_path is not None and img_path.is_file():
                     print(f"  Rendered image:          {img_path}")
-                    # Overlay edge points on image (windowed plot from limb.simulation.analysis.plot)
-                    if len(points) > 0:
+                    detected = np.zeros((0, 2), dtype=np.float64)
+                    edge_rc = -1
+                    edge_pipeline_log = ""
+                    try:
+                        detected, edge_pipeline_log, edge_rc = run_edge_pipeline(
+                            args.binary,
+                            img_path,
+                            gray_threshold=args.edge_gray_threshold,
+                            window_size=args.edge_window_size,
+                            transition_width=args.edge_transition_width,
+                            timeout_s=args.edge_pipeline_timeout,
+                        )
+                    except subprocess.TimeoutExpired:
+                        edge_pipeline_log = "Edge pipeline subprocess TIMEOUT\n"
+                        print("  Edge pipeline:           TIMEOUT (see run log)")
+                    except Exception as e:
+                        edge_pipeline_log = f"Edge pipeline exception: {e}\n"
+                        print(f"  Edge pipeline:           (failed: {e})")
+
+                    detected_path = args.out_dir / f"edges_detected_{idx}.txt"
+                    detected_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(detected_path, "w", encoding="utf-8") as ef:
+                        for i in range(detected.shape[0]):
+                            ef.write(
+                                f"{float(detected[i, 0]):.17g} {float(detected[i, 1]):.17g}\n"
+                            )
+                    print(
+                        f"  Edge pipeline detected:  {detected.shape[0]} points "
+                        f"(returncode {edge_rc}) → {detected_path}"
+                    )
+                    edge_section = (
+                        f"\n\n# --- Edge-only pipeline (returncode {edge_rc}) ---\n"
+                        f"{edge_pipeline_log}"
+                    )
+
+                    plot_points = (
+                        detected if detected.shape[0] > 0 else np.asarray(points, dtype=np.float64)
+                    )
+                    true_overlay = (
+                        np.asarray(points, dtype=np.float64)
+                        if detected.shape[0] > 0 and len(points) > 0
+                        else None
+                    )
+                    if plot_points.shape[0] == 0:
+                        print("  Edge plot:               (skip: no detected or simulated points)")
+                    else:
                         try:
                             from limb.simulation.analysis.plot import edge_plot
+
                             w, h = int(row["cam_x_resolution"]), int(row["cam_y_resolution"])
                             window_length = min(400, min(w, h) // 2)
-                            center_point = len(points) // 2
+                            center_point = int(plot_points.shape[0] // 2)
                             edge_plot_path = args.out_dir / f"edge_plot_{idx}.png"
                             edge_plot(
                                 str(img_path),
-                                np.asarray(points, dtype=np.float64),
+                                plot_points,
                                 center_point,
                                 float(window_length),
-                                true_points=None,
+                                true_points=true_overlay,
                                 save_path=str(edge_plot_path),
                             )
-                            print(f"  Edge plot (overlay):      {edge_plot_path}")
+                            label = (
+                                "detected subpixel edges"
+                                if detected.shape[0] > 0
+                                else "simulated edges only (edge pipeline empty)"
+                            )
+                            print(f"  Edge plot ({label}): {edge_plot_path}")
                         except Exception as e:
                             print(f"  Edge plot:               (skip: {e})")
                 else:
                     print(f"  Rendered image:          (skip: install torch/limb render or use --no-render)")
+            else:
+                edge_section = "\n\n# --- Edge-only pipeline ---\nSkipped (--no-render).\n"
+
             run_log = args.out_dir / f"run_{idx}.txt"
             # Header: all row columns (name = value), then pipeline output
             row_lines = [f"# Row index: {idx}", "# All columns (name = value):"]
@@ -350,8 +487,11 @@ def main() -> None:
                 else:
                     row_lines.append(f"  {col} = {val}")
             row_lines.append("")
-            row_lines.append("# --- Pipeline stdout/stderr ---")
-            run_log.write_text("\n".join(row_lines) + "\n" + full_output, encoding="utf-8")
+            row_lines.append("# --- Distance pipeline stdout/stderr ---")
+            run_log.write_text(
+                "\n".join(row_lines) + "\n" + full_output + edge_section,
+                encoding="utf-8",
+            )
             print(f"  Pipeline log saved:     {run_log}")
         else:
             # No out_dir: still print conic and edge points to stdout

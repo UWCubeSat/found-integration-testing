@@ -187,9 +187,10 @@ int main(int argc, char* argv[]) {
     found::Camera cam(DECIMAL(opts.focal_length),
                      DECIMAL(opts.pixel_size), width, height);
     found::SpheroidDistanceDeterminationAlgorithm distance_algo(
-        std::move(cam), principle_axes, orientation, make_regression(opts));
-    found::SequentialPipeline<found::Image, PositionVector, 2> pipeline;
-    pipeline.AddStage(edge_algo).Complete(distance_algo);
+        std::move(cam), principle_axes, orientation.conjugate(), make_regression(opts));
+    found::LOSTVectorGenerationAlgorithm vector_algo(orientation);
+    found::SequentialPipeline<found::Image, PositionVector, 3> pipeline;
+    pipeline.AddStage(edge_algo).AddStage(distance_algo).Complete(vector_algo);
     PositionVector pos = pipeline.Run(image);
 
     stbi_image_free(data);

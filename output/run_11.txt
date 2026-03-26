@@ -1,0 +1,38 @@
+# Row index: 11
+# All columns (name = value):
+  true_pos_x = 1505660.101313102
+  true_pos_y = 1888038.0490478384
+  true_pos_z = 6356752.31424518
+  qw = -0.4338579252045643
+  qx = -0.0098278508444895
+  qy = -0.0047328435241322
+  qz = 0.900915264759758
+  shape_axis_a = 6378137.0
+  shape_axis_b = 6378137.0
+  shape_axis_c = 6356752.31424518
+  cam_focal_length = 0.0293168199019919
+  cam_x_pixel_pitch = 5e-06
+  cam_y_pixel_pitch = 5e-06
+  cam_x_resolution = 512.0
+  cam_y_resolution = 512.0
+  cam_x_center = 256.0
+  cam_y_center = 256.0
+  out_pos_x = 1499570.0
+  out_pos_y = 1880400.0
+  out_pos_z = 6356750.0
+  runtime_sec = nan
+  instructions = nan
+  bytes_allocated = nan
+  allocations = nan
+  true_x_centroid = 256.0000000000021
+  true_y_centroid = 14730.878444075588
+  true_r_apparent = 5499.608639389143
+  out_x_centroid = 256.00187378286336
+  out_y_centroid = 14786.951008821847
+  out_r_apparent = 5502.41262676296
+  position_distance_error_m = 3465.2279709475115
+  atmosphere_blur = 0.0
+
+# --- Pipeline stdout/stderr ---
+POSITION 1.49957e+06 1.8804e+06 6.35675e+06
+
