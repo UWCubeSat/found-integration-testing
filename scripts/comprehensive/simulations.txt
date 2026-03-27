@@ -51,10 +51,11 @@ num_positions_per_point = 2
 num_spins_per_position = 2
 num_radials_per_spin = 2
 quaternion_noise_sigma_rad = 0
-render_sigma = 0.5
-gray_threshold = 1
-window_size = 11
-transition_width = 1.66
+gray_threshold = 200
+window_size = 5
+transition_width = .4
+zernike_refine = true
+noise_gaussian = 0 10
 regression = tls
 
 [multi-cam-smoke]
@@ -73,8 +74,8 @@ regression = tls
 [render-noise-example]
 # Example only: small grid + mild post-render noise (tune for your study).
 semi_axes = 6378137.0 6378137.0 6356752.31424518
-fovs = 10.0
-resolutions = 256
+fovs = 50.0
+resolutions = 2048
 distances = 7e6
 num_earth_points = 1
 num_positions_per_point = 1

@@ -2,8 +2,7 @@
 """
 Edge analysis: same simulation grid as comprehensive/distance, render limb
 images, run ``pipeline_runner --pipeline edge`` (Zernike + Sobel), and save
-detected edge points, **geometry true edge points** (``limb`` ``points_from_row``),
-and image paths to CSV.
+detected edge points, pixel conic coefficients, and conic residuals to CSV.
 """
 
 from __future__ import annotations
@@ -18,7 +17,8 @@ import numpy as np
 import pandas as pd
 
 from limb.simulation.analysis.metrics import fill_pixel_metrics
-from limb.simulation.metadata.orchestrate import _setup_simulation, points_from_row
+from limb.simulation.edge.conic import _conic_matrix_to_coeffs
+from limb.simulation.metadata.orchestrate import _conic_from_row, _setup_simulation
 
 _repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
@@ -42,12 +42,32 @@ def _edge_points_to_json(pts: np.ndarray) -> str:
     return json.dumps(pairs, separators=(",", ":"))
 
 
+def _coeffs_to_json(coeffs: np.ndarray) -> str:
+    coeffs = np.asarray(coeffs, dtype=np.float64).reshape(6)
+    return json.dumps([float(v) for v in coeffs], separators=(",", ":"))
+
+
+def _conic_residuals_px(points_xy: np.ndarray, coeffs: np.ndarray) -> np.ndarray:
+    """Approximate signed point-to-conic residual in pixels (Taubin-style)."""
+    pts = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+    if pts.shape[0] == 0:
+        return np.zeros((0,), dtype=np.float64)
+    a, b, c, d, e, f = [float(v) for v in np.asarray(coeffs, dtype=np.float64).reshape(6)]
+    x = pts[:, 0]
+    y = pts[:, 1]
+    q = a * x * x + b * x * y + c * y * y + d * x + e * y + f
+    gx = 2.0 * a * x + b * y + d
+    gy = b * x + 2.0 * c * y + e
+    grad = np.sqrt(gx * gx + gy * gy + 1e-12)
+    return q / grad
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
             "Simulation grid → render limb images → edge pipeline "
-            "(Zernike + Sobel); CSV includes rendered_image, true_edge_points_json, "
-            "and edge_points_json."
+            "(Zernike + Sobel); CSV includes rendered_image, edge_points_json, "
+            "pixel_conic_coeffs_json, and conic residuals."
         ),
     )
     p.add_argument(
@@ -139,16 +159,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Sobel edges only; skip Zernike (passes --sobel-only to pipeline_runner).",
     )
-    p.add_argument(
-        "--true-edge-decimals",
-        type=int,
-        default=10,
-        metavar="N",
-        help=(
-            "Decimal places when rounding limb geometry edge points "
-            "(points_from_row, no noise; see limb generate_edge_points truncate)."
-        ),
-    )
     p.add_argument("--seed", type=int, default=None, help="Random seed for render noise.")
     p.add_argument(
         "--pipeline-timeout",
@@ -189,9 +199,6 @@ def parse_args() -> argparse.Namespace:
             )
             sys.exit(1)
         _apply_simulation_config(args, config)
-        for k, v in config.items():
-            if k == "true_edge_decimals":
-                args.true_edge_decimals = int(v.strip())
     if args.sobel_only:
         args.zernike_refine = False
     return args
@@ -203,10 +210,6 @@ def main() -> None:
     if not args.binary.is_file():
         print(f"edge_simulation: binary not found: {args.binary}", file=sys.stderr)
         sys.exit(1)
-    if args.true_edge_decimals < 0:
-        print("edge_simulation: --true-edge-decimals must be >= 0", file=sys.stderr)
-        sys.exit(1)
-
     try:
         _validate_render_options(args)
     except ValueError as e:
@@ -253,10 +256,14 @@ def main() -> None:
     )
 
     df_simulation["rendered_image"] = ""
-    df_simulation["true_edge_points_json"] = ""
-    df_simulation["n_true_edge_points"] = 0
     df_simulation["edge_points_json"] = ""
+    df_simulation["pixel_conic_coeffs_json"] = ""
+    df_simulation["edge_conic_residuals_json"] = ""
     df_simulation["n_detected_edge_points"] = 0
+    df_simulation["edge_conic_abs_residual_mean_px"] = np.nan
+    df_simulation["edge_conic_abs_residual_median_px"] = np.nan
+    df_simulation["edge_conic_abs_residual_max_px"] = np.nan
+    df_simulation["edge_conic_residual_rms_px"] = np.nan
     df_simulation["edge_pipeline_returncode"] = np.nan
     df_simulation["runtime_sec"] = np.nan
 
@@ -282,17 +289,8 @@ def main() -> None:
             pass
         df_simulation.at[idx, "rendered_image"] = str(rel)
 
-        true_pts = np.asarray(
-            points_from_row(
-                row,
-                gaussian_sigma=None,
-                n_false_points=0,
-                truncate=int(args.true_edge_decimals),
-            ),
-            dtype=np.float64,
-        )
-        df_simulation.at[idx, "true_edge_points_json"] = _edge_points_to_json(true_pts)
-        df_simulation.at[idx, "n_true_edge_points"] = int(true_pts.shape[0])
+        conic_coeffs = np.asarray(_conic_matrix_to_coeffs(_conic_from_row(row)), dtype=np.float64)
+        df_simulation.at[idx, "pixel_conic_coeffs_json"] = _coeffs_to_json(conic_coeffs)
 
         t0 = time.perf_counter()
         pts, _out, rc = run_edge_pipeline(
@@ -311,6 +309,18 @@ def main() -> None:
         df_simulation.at[idx, "edge_points_json"] = _edge_points_to_json(pts)
         df_simulation.at[idx, "n_detected_edge_points"] = int(pts.shape[0])
         df_simulation.at[idx, "edge_pipeline_returncode"] = int(rc)
+        residuals = _conic_residuals_px(pts, conic_coeffs)
+        df_simulation.at[idx, "edge_conic_residuals_json"] = json.dumps(
+            [float(v) for v in residuals], separators=(",", ":")
+        )
+        if residuals.size > 0:
+            abs_res = np.abs(residuals)
+            df_simulation.at[idx, "edge_conic_abs_residual_mean_px"] = float(np.mean(abs_res))
+            df_simulation.at[idx, "edge_conic_abs_residual_median_px"] = float(np.median(abs_res))
+            df_simulation.at[idx, "edge_conic_abs_residual_max_px"] = float(np.max(abs_res))
+            df_simulation.at[idx, "edge_conic_residual_rms_px"] = float(
+                np.sqrt(np.mean(residuals * residuals))
+            )
 
     df_simulation = fill_pixel_metrics(df_simulation)
 

@@ -2,9 +2,8 @@
 """
 Plot edge-detection results from ``scripts/edge/simulation.py`` CSV rows.
 
-Overlays **detected** edges (pipeline) and **true** limb geometry
-(``true_edge_points_json`` from ``points_from_row``). Full frame plus zoom with
-pixel grid so subpixel offsets are obvious.
+Overlays detected edges and the pixel conic (`Q(x, y) = 0`) on full-frame and
+zoomed views so edge-to-conic offsets are visible.
 """
 
 from __future__ import annotations
@@ -18,6 +17,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.image import imread
+from limb.simulation.edge.conic import _conic_matrix_to_coeffs
+from limb.simulation.metadata.orchestrate import _conic_from_row
 
 _repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
@@ -33,15 +34,41 @@ def edge_points_from_row(row: pd.Series) -> np.ndarray:
     return np.asarray(data, dtype=np.float64).reshape(-1, 2)
 
 
-def true_edge_points_from_row(row: pd.Series) -> np.ndarray:
-    """Parse ``true_edge_points_json`` from an edge-simulation CSV row."""
-    if "true_edge_points_json" not in row.index:
-        return np.zeros((0, 2), dtype=np.float64)
-    raw = row["true_edge_points_json"]
-    if pd.isna(raw) or raw == "":
-        return np.zeros((0, 2), dtype=np.float64)
-    data = json.loads(str(raw))
-    return np.asarray(data, dtype=np.float64).reshape(-1, 2)
+def conic_coeffs_from_row(row: pd.Series) -> np.ndarray:
+    """Read conic coefficients from CSV row; fallback to metadata-derived conic."""
+    if "pixel_conic_coeffs_json" in row.index:
+        raw = row["pixel_conic_coeffs_json"]
+        if not pd.isna(raw) and raw != "":
+            vals = np.asarray(json.loads(str(raw)), dtype=np.float64).reshape(6)
+            return vals
+    return np.asarray(_conic_matrix_to_coeffs(_conic_from_row(row)), dtype=np.float64).reshape(6)
+
+
+def _conic_q(coeffs: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    a, b, c, d, e, f = [float(v) for v in np.asarray(coeffs, dtype=np.float64).reshape(6)]
+    return a * x * x + b * x * y + c * y * y + d * x + e * y + f
+
+
+def _plot_conic_contour(
+    ax: plt.Axes,
+    coeffs: np.ndarray,
+    x0: float,
+    x1: float,
+    y0: float,
+    y1: float,
+    *,
+    n: int = 600,
+    color: str = "orangered",
+    lw: float = 1.6,
+    label: str | None = None,
+) -> None:
+    xs = np.linspace(float(x0), float(x1), int(max(40, n)))
+    ys = np.linspace(float(y0), float(y1), int(max(40, n)))
+    xx, yy = np.meshgrid(xs, ys)
+    qq = _conic_q(coeffs, xx, yy)
+    ax.contour(xx, yy, qq, levels=[0.0], colors=[color], linewidths=lw)
+    if label is not None:
+        ax.plot([], [], color=color, linewidth=lw, label=label)
 
 
 def resolve_rendered_image(
@@ -86,42 +113,6 @@ def _pick_zoom_center(points: np.ndarray, mode: str, index: int) -> np.ndarray:
     raise ValueError("mode must be 'index', 'median', or 'mean'")
 
 
-def _plot_x_markers(
-    ax: plt.Axes,
-    x: np.ndarray,
-    y: np.ndarray,
-    *,
-    outer_ms: float,
-    outer_mew: float,
-    inner_ms: float,
-    inner_mew: float,
-    color: str,
-    label: str | None,
-    z: int = 5,
-) -> None:
-    """Draw 'x' markers with a white halo for contrast on variable backgrounds."""
-    kwargs_outer = {
-        "linestyle": "None",
-        "marker": "x",
-        "color": "white",
-        "markersize": outer_ms,
-        "markeredgewidth": outer_mew,
-        "zorder": z,
-    }
-    kwargs_inner = {
-        "linestyle": "None",
-        "marker": "x",
-        "color": color,
-        "markersize": inner_ms,
-        "markeredgewidth": inner_mew,
-        "zorder": z + 1,
-    }
-    if label is not None:
-        kwargs_inner["label"] = label
-    ax.plot(x, y, **kwargs_outer)
-    ax.plot(x, y, **kwargs_inner)
-
-
 def plot_edge_simulation_row(
     row: pd.Series,
     *,
@@ -129,18 +120,15 @@ def plot_edge_simulation_row(
     zoom_window: float = 28.0,
     zoom_center: str = "median",
     zoom_center_index: int = 0,
-    show_true_edges: bool = True,
     figsize: tuple[float, float] = (11.0, 5.5),
     dpi: int = 150,
     save_path: str | Path | None = None,
     show: bool = True,
 ) -> plt.Figure:
     """
-    Plot **detected** (Zernike+Sobel) and **true** geometry limb points on the
-    rendered image for one CSV row.
+    Plot detected edge points and the pixel conic for one CSV row.
 
-    **Left:** full frame. Detected points use ``'+'`` (blue + white outline).
-    True geometry uses ``'x'`` (orangered + white outline) when present.
+    **Left:** full frame with detected points and conic overlay.
 
     **Right:** zoom with pixel grid; same markers at larger size.
 
@@ -148,7 +136,7 @@ def plot_edge_simulation_row(
     ----------
     row
         One row from edge simulation CSV (``rendered_image``, ``edge_points_json``;
-        optional ``true_edge_points_json``).
+        optional ``pixel_conic_coeffs_json``).
     base_dir
         Directory used to resolve a relative ``rendered_image`` path
         (typically the directory containing the CSV).
@@ -158,25 +146,18 @@ def plot_edge_simulation_row(
         ``'median'`` | ``'mean'`` | ``'index'`` — how to pick the zoom center;
         with ``'index'``, use ``zoom_center_index`` into the point list.
     zoom_center_index
-        Point index when ``zoom_center='index'`` (into detected points if any,
-        else true points).
-    show_true_edges
-        Plot ``true_edge_points_json`` when the column exists and is non-empty.
+        Point index when ``zoom_center='index'``.
     """
     img_path = resolve_rendered_image(row, base_dir=base_dir)
     raw = imread(str(img_path))
     gray, width, height = _image_to_grayscale(np.asarray(raw))
 
     pts_det = edge_points_from_row(row)
-    pts_true = true_edge_points_from_row(row) if show_true_edges else np.zeros((0, 2))
-    if pts_det.shape[0] == 0 and pts_true.shape[0] == 0:
-        raise ValueError(
-            "Row has no detected or true edge points; need edge_points_json and/or "
-            "true_edge_points_json."
-        )
-
-    center_ref = pts_det if pts_det.shape[0] else pts_true
-    center = _pick_zoom_center(center_ref, zoom_center, zoom_center_index)
+    coeffs = conic_coeffs_from_row(row)
+    if pts_det.shape[0] == 0:
+        center = np.asarray([width / 2.0, height / 2.0], dtype=np.float64)
+    else:
+        center = _pick_zoom_center(pts_det, zoom_center, zoom_center_index)
     half = float(zoom_window) / 2.0
     cx, cy = float(center[0]), float(center[1])
     x0 = max(0, int(np.floor(cx - half)))
@@ -214,19 +195,7 @@ def plot_edge_simulation_row(
     ax_full.set_xlabel("x (pixels)")
     ax_full.set_ylabel("y (pixels)")
 
-    if pts_true.shape[0]:
-        _plot_x_markers(
-            ax_full,
-            pts_true[:, 0],
-            pts_true[:, 1],
-            outer_ms=10.0,
-            outer_mew=2.6,
-            inner_ms=7.5,
-            inner_mew=1.3,
-            color="orangered",
-            label="true limb (geometry)",
-            z=3,
-        )
+    _plot_conic_contour(ax_full, coeffs, 0, width, 0, height, n=700, label="pixel conic Q=0")
 
     if pts_det.shape[0]:
         ax_full.plot(
@@ -250,7 +219,9 @@ def plot_edge_simulation_row(
             label="detected (pipeline)",
             zorder=6,
         )
-    ax_full.legend(loc="upper right", fontsize=8)
+    handles, labels = ax_full.get_legend_handles_labels()
+    if handles:
+        ax_full.legend(loc="upper right", fontsize=8)
 
     # Zoom panel: grayscale + pixel grid (matches limb.simulation.analysis.plot.edge_plot)
     ax_zoom.imshow(
@@ -284,24 +255,7 @@ def plot_edge_simulation_row(
             & (p[:, 1] <= y1)
         )
 
-    n_true_in = 0
-    if pts_true.shape[0]:
-        m = _in_window(pts_true)
-        n_true_in = int(np.count_nonzero(m))
-        txz, tyz = pts_true[m, 0], pts_true[m, 1]
-        if txz.size:
-            _plot_x_markers(
-                ax_zoom,
-                txz,
-                tyz,
-                outer_ms=15.0,
-                outer_mew=3.2,
-                inner_ms=12.0,
-                inner_mew=1.4,
-                color="orangered",
-                label=None,
-                z=3,
-            )
+    _plot_conic_contour(ax_zoom, coeffs, x0, x1, y0, y1, n=350, lw=1.7)
 
     n_det_in = 0
     if pts_det.shape[0]:
@@ -330,9 +284,15 @@ def plot_edge_simulation_row(
                 zorder=6,
             )
 
+    mean_abs = row.get("edge_conic_abs_residual_mean_px")
+    rms = row.get("edge_conic_residual_rms_px")
+    extra = ""
+    if pd.notna(mean_abs):
+        extra = f", mean|r|={float(mean_abs):.3f}px"
+    if pd.notna(rms):
+        extra += f", rms={float(rms):.3f}px"
     fig.suptitle(
-        f"{img_path.name} — zoom: {n_det_in}/{pts_det.shape[0]} detected, "
-        f"{n_true_in}/{pts_true.shape[0]} true",
+        f"{img_path.name} — zoom: {n_det_in}/{pts_det.shape[0]} detected{extra}",
         fontsize=11,
     )
 
@@ -368,11 +328,6 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not open interactive window (useful with --save).",
     )
-    p.add_argument(
-        "--no-true",
-        action="store_true",
-        help="Do not plot true_edge_points_json (detected only).",
-    )
     return p.parse_args()
 
 
@@ -393,7 +348,6 @@ def main() -> None:
         zoom_window=args.zoom_window,
         zoom_center=args.zoom_center,
         zoom_center_index=args.zoom_center_index,
-        show_true_edges=not args.no_true,
         dpi=args.dpi,
         save_path=args.save,
         show=not args.no_show,

@@ -3,6 +3,15 @@
 #
 # Edge pipeline (pipeline_runner --pipeline edge):
 #   zernike_refine = true | false   (default true; false = Sobel only, same as CLI --sobel-only)
+# Output adds conic diagnostics:
+#   pixel_conic_coeffs_json, edge_conic_residuals_json, and residual summary columns (px)
+# Optional render noise (same keys accepted by comprehensive simulation):
+#   noise_gaussian = <mean> <sigma>
+#   noise_stars = <prob>
+#   noise_discretization = <levels>
+#   noise_motion_blur = <kernel>
+#   noise_dead_pixels = <salt> <pepper>
+#   noise_config_json = <path>
 #
 #   uv run python scripts/edge/simulation.py \
 #     --simulation-file scripts/edge/simulations.txt \
@@ -20,8 +29,30 @@ num_spins_per_position = 4
 num_radials_per_spin = 1
 render_sigma = 0.3
 render_batch_size = 500
-gray_threshold = 10
-window_size = 7
-transition_width = 1.66
+gray_threshold = 200
+window_size = 5
+transition_width = .4
 zernike_refine = true
-true_edge_decimals = 10
+noise_gaussian = 0 10
+noise_stars = 0.0002
+
+[baseline-noise]
+semi_axes = 6378137.0 6378137.0 6356752.31424518
+fovs = 50.0
+resolutions = 1024
+distances = 8e6
+num_earth_points = 1
+num_positions_per_point = 1
+num_spins_per_position = 4
+num_radials_per_spin = 1
+render_sigma = 0.3
+render_batch_size = 500
+gray_threshold = 40
+window_size = 5
+transition_width = .4
+zernike_refine = true
+noise_gaussian = 0 8
+noise_stars = 0.002
+noise_discretization = 16
+noise_motion_blur = 5
+noise_dead_pixels = 0.001 0.000
