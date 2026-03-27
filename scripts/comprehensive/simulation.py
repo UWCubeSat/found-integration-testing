@@ -110,6 +110,7 @@ def _apply_simulation_config(args: argparse.Namespace, config: dict[str, str]) -
         {
             "time_pipeline": lambda v: setattr(args, "time_pipeline", truth(v)),
             "valgrind": lambda v: setattr(args, "valgrind", truth(v)),
+            "zernike_refine": lambda v: setattr(args, "zernike_refine", truth(v)),
             "noise_gaussian": lambda v: setattr(args, "noise_gaussian", pair2f(v)),
             "noise_stars": lambda v: setattr(args, "noise_stars", float(v)),
             "noise_dead_pixels": lambda v: setattr(args, "noise_dead_pixels", pair2f(v)),
@@ -299,6 +300,7 @@ def _build_full_pipeline_cmd(
     window_size: int,
     transition_width: float,
     quaternion_wxyz: tuple[float, float, float, float] | None,
+    zernike_refine: bool = True,
 ) -> list[str]:
     cmd = [
         str(binary),
@@ -319,6 +321,8 @@ def _build_full_pipeline_cmd(
         "--transition-width",
         str(float(transition_width)),
     ]
+    if not zernike_refine:
+        cmd.append("--sobel-only")
     if regression == "ridge":
         cmd += ["--ridge-lambda", str(ridge_lambda)]
     elif regression == "ransac":
@@ -415,6 +419,7 @@ def run_full_pipeline(
     gray_threshold: int = 10,
     window_size: int = 7,
     transition_width: float = 1.66,
+    zernike_refine: bool = True,
     quaternion_wxyz: tuple[float, float, float, float] | None = None,
     timeout_s: int = 120,
     time_pipeline: bool = False,
@@ -434,6 +439,7 @@ def run_full_pipeline(
         window_size=window_size,
         transition_width=transition_width,
         quaternion_wxyz=quaternion_wxyz,
+        zernike_refine=zernike_refine,
     )
     if valgrind:
         prefix = list(valgrind_prefix) if valgrind_prefix is not None else list(DEFAULT_VALGRIND_PREFIX)
@@ -459,6 +465,7 @@ def parse_args() -> argparse.Namespace:
             "(edge + distance + position); write CSV and image directory."
         ),
     )
+    p.set_defaults(zernike_refine=True)
     p.add_argument(
         "--semi-axes",
         nargs=3,
@@ -570,6 +577,11 @@ def parse_args() -> argparse.Namespace:
         help="Zernike transition width.",
     )
     p.add_argument(
+        "--sobel-only",
+        action="store_true",
+        help="Skip Zernike refinement in full pipeline (pass --sobel-only to pipeline_runner).",
+    )
+    p.add_argument(
         "--regression",
         type=str,
         default="tls",
@@ -643,6 +655,9 @@ def main() -> None:
             )
             sys.exit(1)
         _apply_simulation_config(args, config)
+
+    if args.sobel_only:
+        args.zernike_refine = False
 
     if not args.binary.is_file():
         print(f"comprehensive: binary not found: {args.binary}", file=sys.stderr)
@@ -775,6 +790,7 @@ def main() -> None:
             gray_threshold=args.gray_threshold,
             window_size=args.window_size,
             transition_width=args.transition_width,
+            zernike_refine=args.zernike_refine,
             quaternion_wxyz=pipeline_quat[int(idx)],
             timeout_s=pipeline_timeout,
             time_pipeline=args.time_pipeline,

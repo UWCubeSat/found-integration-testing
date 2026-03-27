@@ -105,9 +105,10 @@ def run_edge_pipeline(
     gray_threshold: int = 10,
     window_size: int = 7,
     transition_width: float = 1.66,
+    zernike_refine: bool = True,
     timeout_s: int = 120,
 ) -> tuple[np.ndarray, str, int]:
-    """Run Zernike+Sobel edge detection on ``image_path``; return (points_xy, combined_output, returncode)."""
+    """Run edge detection on ``image_path`` (Sobel + optional Zernike); return (points_xy, combined_output, returncode)."""
     cmd = [
         str(binary),
         "--pipeline",
@@ -121,6 +122,8 @@ def run_edge_pipeline(
         "--transition-width",
         str(float(transition_width)),
     ]
+    if not zernike_refine:
+        cmd.append("--sobel-only")
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
     out = (proc.stdout or "") + "\n" + (proc.stderr or "")
     pts = _parse_edge_pipeline_stdout(proc.stdout or "")
@@ -276,6 +279,11 @@ def parse_args() -> argparse.Namespace:
         help="Timeout seconds for --pipeline edge subprocess (default: 120).",
     )
     p.add_argument(
+        "--edge-sobel-only",
+        action="store_true",
+        help="Pass --sobel-only to pipeline_runner (--pipeline edge); skip Zernike refinement.",
+    )
+    p.add_argument(
         "--quiet",
         action="store_true",
         help="Only print one-line summary per row; do not print full pipeline output.",
@@ -413,6 +421,7 @@ def main() -> None:
                             gray_threshold=args.edge_gray_threshold,
                             window_size=args.edge_window_size,
                             transition_width=args.edge_transition_width,
+                            zernike_refine=not args.edge_sobel_only,
                             timeout_s=args.edge_pipeline_timeout,
                         )
                     except subprocess.TimeoutExpired:

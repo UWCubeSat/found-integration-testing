@@ -27,6 +27,8 @@ static void usage_text(const char* prog) {
         << "  --gray-threshold   <0-255>  Sobel high threshold (default: 10)\n"
         << "  --window-size      <n>      Zernike window size (default: 7)\n"
         << "  --transition-width <w>      Zernike transition width (default: 1.66)\n"
+        << "  --zernike-refine   <0|1>    1 = Sobel + Zernike (default), 0 = Sobel only\n"
+        << "  --sobel-only                Shorthand for --zernike-refine 0 (edge/full)\n"
         << "  Distance stage regression (for distance/full pipeline):\n"
         << "  --regression       <alg>   tls | ols | ridge | ransac (default: tls)\n"
         << "  --ridge-lambda     <λ>     Ridge L2 regularization (for --regression ridge, default: 1e-6)\n"
@@ -121,6 +123,19 @@ bool ParseOptions(int argc, char* argv[], PipelineOptions* out) {
             out->window_size = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--transition-width") == 0 && i + 1 < argc) {
             out->transition_width = std::stod(argv[++i]);
+        } else if (std::strcmp(argv[i], "--zernike-refine") == 0 && i + 1 < argc) {
+            const char* v = argv[++i];
+            if (std::strcmp(v, "0") == 0 || std::strcmp(v, "false") == 0) {
+                out->zernike_refine = false;
+            } else if (std::strcmp(v, "1") == 0 || std::strcmp(v, "true") == 0) {
+                out->zernike_refine = true;
+            } else {
+                std::cerr << "Unknown --zernike-refine value (use 0|1|true|false)\n";
+                Usage(argv[0]);
+                return false;
+            }
+        } else if (std::strcmp(argv[i], "--sobel-only") == 0) {
+            out->zernike_refine = false;
         } else if (std::strcmp(argv[i], "--regression") == 0 && i + 1 < argc) {
             if (!parse_regression_kind(argv[++i], out)) {
                 std::cerr << "Unknown --regression (use tls | ols | ridge | ransac)\n";

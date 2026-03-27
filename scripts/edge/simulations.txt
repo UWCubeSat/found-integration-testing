@@ -1,0 +1,27 @@
+# Edge simulation presets (use with scripts/edge/simulation.py).
+# Syntax matches scripts/comprehensive/simulations.txt for shared keys.
+#
+# Edge pipeline (pipeline_runner --pipeline edge):
+#   zernike_refine = true | false   (default true; false = Sobel only, same as CLI --sobel-only)
+#
+#   uv run python scripts/edge/simulation.py \
+#     --simulation-file scripts/edge/simulations.txt \
+#     --simulation-name baseline \
+#     --output results/edge_baseline.csv
+
+[baseline]
+semi_axes = 6378137.0 6378137.0 6356752.31424518
+fovs = 50.0
+resolutions = 1024
+distances = 8e6
+num_earth_points = 1
+num_positions_per_point = 1
+num_spins_per_position = 4
+num_radials_per_spin = 1
+render_sigma = 0.3
+render_batch_size = 500
+gray_threshold = 10
+window_size = 7
+transition_width = 1.66
+zernike_refine = true
+true_edge_decimals = 10

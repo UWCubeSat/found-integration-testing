@@ -60,9 +60,11 @@ struct PipelineOptions {
     int           mask           = 1;   // or mask type
     double        sparseness     = 1.0;
 
-    // ZernikeEdgeDetectionAlgorithm
+    // ZernikeEdgeDetectionAlgorithm (Sobel-only when zernike_refine is false)
     int    window_size     = 7;
     double transition_width = 1.66;
+    /** If true, refine Sobel edges with Zernike moments; if false, use Sobel points only. */
+    bool   zernike_refine  = true;
 
     // Distance stage regression (--regression tls|ols|ridge|ransac)
     RegressionKind regression = RegressionKind::kTls;

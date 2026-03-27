@@ -19,7 +19,7 @@
 int main(int argc, char* argv[]) {
     pipeline::PipelineOptions opts;
     if (!pipeline::ParseOptions(argc, argv, &opts)) {
-        return opts.image_path.empty() ? 1 : 0;
+        return pipeline::g_help_requested ? 0 : 1;
     }
 
     int width = 0, height = 0, channels = 0;
@@ -31,12 +31,20 @@ int main(int argc, char* argv[]) {
 
     found::Image image{width, height, channels, data};
 
-    decimal sobel_high = DECIMAL(opts.gray_threshold) / DECIMAL(255.0);
-    auto sobel_edge_algo = std::make_unique<found::SobelEdgeDetectionAlgorithm>(sobel_high);
-    found::ZernikeEdgeDetectionAlgorithm edge_algo(
-        std::move(sobel_edge_algo), opts.window_size, DECIMAL(opts.transition_width));
-
-    found::Points points = edge_algo.Run(image);
+    found::Points points;
+    if (opts.zernike_refine) {
+        decimal sobel_high = DECIMAL(opts.gray_threshold) / DECIMAL(255.0);
+        auto sobel_edge_algo =
+            std::make_unique<found::SobelEdgeDetectionAlgorithm>(sobel_high);
+        found::ZernikeEdgeDetectionAlgorithm edge_algo(
+            std::move(sobel_edge_algo), opts.window_size,
+            DECIMAL(opts.transition_width));
+        points = edge_algo.Run(image);
+    } else {
+        found::SobelEdgeDetectionAlgorithm edge_sobel(
+            DECIMAL(opts.gray_threshold) / DECIMAL(255.0));
+        points = edge_sobel.Run(image);
+    }
     stbi_image_free(data);
 
     for (const found::Vec2& p : points) {

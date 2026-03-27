@@ -2,7 +2,7 @@
 // zernike-cra main — Multi-mode pipeline (edge | distance | full)
 //
 // Modes (--pipeline):
-//   edge    — Input: --image. Output: lines "x y" (edge points).
+//   edge    — Input: --image. Output: lines "x y" (Sobel + Zernike by default; --sobel-only for Sobel).
 //   distance — Input: --edges-file, --width, --height, camera/axes/quat. Output: "POSITION x y z".
 //   full    — Input: --image, camera/axes/quat. Output: "POSITION x y z".
 // =============================================================================
@@ -47,6 +47,22 @@ found::Points load_points_from_file(const std::string& path) {
             points.push_back(found::Vec2(DECIMAL(x), DECIMAL(y)));
     }
     return points;
+}
+
+/** Sobel (+ optional Zernike) edge points in image pixel coordinates. */
+found::Points run_edge_detection(
+    const found::Image& image,
+    const pipeline::PipelineOptions& opts) {
+    decimal sobel_high =
+        DECIMAL(opts.gray_threshold) / DECIMAL(255.0);
+    auto sobel_algo =
+        std::make_unique<found::SobelEdgeDetectionAlgorithm>(sobel_high);
+    if (!opts.zernike_refine) {
+        return sobel_algo->Run(image);
+    }
+    found::ZernikeEdgeDetectionAlgorithm edge_algo(
+        std::move(sobel_algo), opts.window_size, DECIMAL(opts.transition_width));
+    return edge_algo.Run(image);
 }
 
 /** Build regression function for distance stage from CLI options. nullptr = use TLS. */
@@ -113,14 +129,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         found::Image image{width, height, channels, data};
-        decimal sobel_high =
-            DECIMAL(opts.gray_threshold) / DECIMAL(255.0);
-        auto sobel_edge_algo =
-            std::make_unique<found::SobelEdgeDetectionAlgorithm>(sobel_high);
-        found::ZernikeEdgeDetectionAlgorithm edge_algo(
-            std::move(sobel_edge_algo), opts.window_size,
-            DECIMAL(opts.transition_width));
-        Points points = edge_algo.Run(image);
+        Points points = run_edge_detection(image, opts);
         stbi_image_free(data);
         std::ostream* out = &std::cout;
         std::ofstream ofile;
@@ -178,20 +187,30 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     found::Image image{width, height, channels, data};
-    decimal sobel_high = DECIMAL(opts.gray_threshold) / DECIMAL(255.0);
-    auto sobel_edge_algo =
-        std::make_unique<found::SobelEdgeDetectionAlgorithm>(sobel_high);
-    found::ZernikeEdgeDetectionAlgorithm edge_algo(
-        std::move(sobel_edge_algo), opts.window_size,
-        DECIMAL(opts.transition_width));
     found::Camera cam(DECIMAL(opts.focal_length),
-                     DECIMAL(opts.pixel_size), width, height);
+                       DECIMAL(opts.pixel_size), width, height);
     found::SpheroidDistanceDeterminationAlgorithm distance_algo(
         std::move(cam), principle_axes, orientation.conjugate(), make_regression(opts));
     found::LOSTVectorGenerationAlgorithm vector_algo(orientation);
-    found::SequentialPipeline<found::Image, PositionVector, 3> pipeline;
-    pipeline.AddStage(edge_algo).AddStage(distance_algo).Complete(vector_algo);
-    PositionVector pos = pipeline.Run(image);
+
+    PositionVector pos;
+    if (opts.zernike_refine) {
+        decimal sobel_high = DECIMAL(opts.gray_threshold) / DECIMAL(255.0);
+        auto sobel_edge_algo =
+            std::make_unique<found::SobelEdgeDetectionAlgorithm>(sobel_high);
+        found::ZernikeEdgeDetectionAlgorithm edge_algo(
+            std::move(sobel_edge_algo), opts.window_size,
+            DECIMAL(opts.transition_width));
+        found::SequentialPipeline<found::Image, PositionVector, 3> pipeline;
+        pipeline.AddStage(edge_algo).AddStage(distance_algo).Complete(vector_algo);
+        pos = pipeline.Run(image);
+    } else {
+        found::SobelEdgeDetectionAlgorithm edge_sobel_only(
+            DECIMAL(opts.gray_threshold) / DECIMAL(255.0));
+        found::SequentialPipeline<found::Image, PositionVector, 3> pipeline;
+        pipeline.AddStage(edge_sobel_only).AddStage(distance_algo).Complete(vector_algo);
+        pos = pipeline.Run(image);
+    }
 
     stbi_image_free(data);
     double x = static_cast<double>(pos.x());
