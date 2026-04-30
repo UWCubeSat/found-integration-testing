@@ -57,6 +57,7 @@ transition_width = .4
 zernike_refine = true
 noise_gaussian = 0 10
 regression = tls
+time_pipeline = true
 
 [multi-cam-smoke]
 semi_axes = 6378137.0 6378137.0 6356752.31424518

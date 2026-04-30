@@ -1,0 +1,16 @@
+# Use Debian Bullseye to match BeagleBone's GLIBC version (~2.31)
+FROM debian:bullseye
+
+# Install the cross-compilation toolchain and build tools
+RUN apt-get update && apt-get install -y \
+    cmake \
+    make \
+    gcc-10-arm-linux-gnueabihf \
+    g++-10-arm-linux-gnueabihf \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set the work directory inside the container
+WORKDIR /build
+
+# Default command is just to stay open or run a build script
+CMD ["/bin/bash"]
